@@ -1,16 +1,16 @@
 # Real-World Task Management Application
 
-## 🎯 Overview
+## Overview
 
-This is a complete **3-tier application** demonstrating enterprise-grade security with HashiCorp Vault:
+This is a complete 3-tier application demonstrating enterprise-grade security with HashiCorp Vault:
 
-- **Frontend**: React SPA with modern UI
-- **Backend**: Node.js REST API
-- **Database**: PostgreSQL with dynamic credentials from Vault
+- Frontend: React SPA with modern UI
+- Backend: Node.js REST API
+- Database: PostgreSQL with dynamic credentials from Vault
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -52,7 +52,7 @@ This is a complete **3-tier application** demonstrating enterprise-grade securit
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Start All Services
 
@@ -92,16 +92,16 @@ start http://localhost:8200/ui
 
 ---
 
-## 📊 Features
+## Features
 
 ### Frontend Features
 
-✅ **Dashboard**
+**Dashboard**
 - Real-time task statistics
 - Task counts by status
 - Overdue task warnings
 
-✅ **Task Management**
+**Task Management**
 - Create new tasks
 - Edit existing tasks
 - Delete tasks
@@ -109,27 +109,27 @@ start http://localhost:8200/ui
 - Due date tracking
 - Tag support
 
-✅ **Security Display**
+**Security Display**
 - Shows dynamic database username
 - Displays credential expiration
 - Real-time connection status
 
 ### Backend Features
 
-✅ **REST API Endpoints**
+**REST API Endpoints**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/tasks` | Get all tasks (with filters) |
-| GET | `/api/tasks/:id` | Get single task |
-| POST | `/api/tasks` | Create task |
-| PUT | `/api/tasks/:id` | Update task |
-| DELETE | `/api/tasks/:id` | Delete task |
-| GET | `/api/stats` | Dashboard statistics |
-| GET | `/api/db/test` | Test database connection |
-| GET | `/api/health` | Health check |
+| GET | /api/tasks | Get all tasks (with filters) |
+| GET | /api/tasks/:id | Get single task |
+| POST | /api/tasks | Create task |
+| PUT | /api/tasks/:id | Update task |
+| DELETE | /api/tasks/:id | Delete task |
+| GET | /api/stats | Dashboard statistics |
+| GET | /api/db/test | Test database connection |
+| GET | /api/health | Health check |
 
-✅ **Vault Integration**
+**Vault Integration**
 - Dynamic credential retrieval
 - Auto-renewal (80% of TTL)
 - Connection pool management
@@ -137,39 +137,39 @@ start http://localhost:8200/ui
 
 ### Database Features
 
-✅ **Schema**
+**Schema**
 - Users table
 - Tasks table
 - Task tags table
 - Proper indexes
 - Foreign key constraints
 
-✅ **Sample Data**
+**Sample Data**
 - 3 sample users
 - 6 sample tasks
 - Task tags
 
 ---
 
-## 🔐 Security Features
+## Security Features
 
 ### Dynamic Database Credentials
 
 **How it works:**
 
 1. Backend requests credentials from Vault
-2. Vault creates unique PostgreSQL user: `v-token-xxxxx`
+2. Vault creates unique PostgreSQL user: v-token-xxxxx
 3. User has 1 hour TTL
 4. Backend auto-renews at 48 minutes
 5. Old credentials automatically revoked
 
 **Benefits:**
 
-- ✅ No hardcoded passwords in code
-- ✅ Automatic credential rotation
-- ✅ Limited blast radius if leaked
-- ✅ Complete audit trail
-- ✅ Instant revocation capability
+- No hardcoded passwords in code
+- Automatic credential rotation
+- Limited blast radius if leaked
+- Complete audit trail
+- Instant revocation capability
 
 ### Example Flow
 
@@ -197,7 +197,7 @@ setTimeout(renewCredentials, 3600 * 0.8 * 1000);
 
 ---
 
-## 🧪 Testing
+## Testing
 
 ### Test API Endpoints
 
@@ -246,7 +246,7 @@ docker exec vault-postgres psql -U postgres -d vault_demo -c "\du"
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 vault-lab/
@@ -271,17 +271,17 @@ vault-lab/
 │   └── Dockerfile
 └── docs/
     ├── README.md               # Main documentation
-    ├── DEMO-GUIDE.md           # Demo walkthrough
+    ├── burmese.md              # Burmese documentation
     └── REAL-WORLD-APP.md       # This file
 ```
 
 ---
 
-## 🎓 Learning Points
+## Learning Points
 
-### 1. **No Hardcoded Credentials**
+### 1. No Hardcoded Credentials
 
-❌ **Traditional (INSECURE)**:
+**Traditional (INSECURE)**:
 ```javascript
 const pool = new Pool({
   user: 'admin',
@@ -289,7 +289,7 @@ const pool = new Pool({
 });
 ```
 
-✅ **Your Way (SECURE)**:
+**Your Way (SECURE)**:
 ```javascript
 const creds = await vault.read('database/creds/app-role');
 const pool = new Pool({
@@ -298,14 +298,14 @@ const pool = new Pool({
 });
 ```
 
-### 2. **Automatic Rotation**
+### 2. Automatic Rotation
 
 Credentials rotate every hour automatically:
 - No manual intervention
 - Zero downtime
 - Transparent to application
 
-### 3. **Audit Trail**
+### 3. Audit Trail
 
 Every credential generation is logged:
 ```powershell
@@ -313,7 +313,7 @@ Every credential generation is logged:
 docker exec vault-server cat /vault/logs/audit.log
 ```
 
-### 4. **Instant Revocation**
+### 4. Instant Revocation
 
 If credentials are compromised:
 ```powershell
@@ -323,7 +323,7 @@ docker exec vault-server sh -c "VAULT_TOKEN=dev-only-token vault lease revoke -p
 
 ---
 
-## 🎯 Real-World Use Cases
+## Real-World Use Cases
 
 ### Use Case 1: Microservices Architecture
 
@@ -361,7 +361,7 @@ Dynamic credentials for deployment:
 
 ---
 
-## 🚀 Production Deployment
+## Production Deployment
 
 ### Environment Variables
 
@@ -395,7 +395,7 @@ vault write database/roles/app-role \
 
 ---
 
-## 📚 Additional Resources
+## Additional Resources
 
 - [Vault Database Secrets Engine](https://developer.hashicorp.com/vault/docs/secrets/databases)
 - [Vault PostgreSQL Plugin](https://developer.hashicorp.com/vault/docs/secrets/databases/postgresql)
@@ -404,4 +404,4 @@ vault write database/roles/app-role \
 
 ---
 
-**You now have a production-ready 3-tier application with enterprise-grade secrets management! 🎉**
+You now have a production-ready 3-tier application with enterprise-grade secrets management!

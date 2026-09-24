@@ -1,8 +1,8 @@
-# 🔐 Vault သုံးတာ vs Vault မသုံးတာ - အသေးစိတ်ရှင်းပြချက်
+# Vault သုံးတာ vs Vault မသုံးတာ - အသေးစိတ်ရှင်းပြချက်
 
 ---
 
-## 📋 မာတိကာ
+## မာတိကာ
 
 1. [Vault ဆိုတာဘာလဲ](#vault-ဆိုတာဘာလဲ)
 2. [Vault မသုံးတာ vs Vault သုံးတာ](#vault-မသုံးတာ-vs-vault-သုံးတာ)
@@ -20,10 +20,10 @@
 
 **HashiCorp Vault** ဆိုတာ **Secrets Management Tool** တစ်ခုဖြစ်ပြီး-
 
-- 🔑 Password, API keys, tokens စတာတွေကို လုံခြုံစွာသိမ်းဆည်းပေးတယ်
-- 🔄 Dynamic credentials တွေကို အလိုအလျောက် လုပ်ပေးတယ်
-- 📝 ဘယ်သူ ဘယ်အချိန် ဝင်ရောက်သွားလဲ မှတ်တမ်းတင်ပေးတယ်
-- ⏰ Credentials တွေကို အချိန်ကျရင် အလိုအလျောက် ဖျက်ပေးတယ်
+- Password, API keys, tokens စတာတွေကို လုံခြုံစွာသိမ်းဆည်းပေးတယ်
+- Dynamic credentials တွေကို အလိုအလျောက် လုပ်ပေးတယ်
+- ဘယ်သူ ဘယ်အချိန် ဝင်ရောက်သွားလဲ မှတ်တမ်းတင်ပေးတယ်
+- Credentials တွေကို အချိန်ကျရင် အလိုအလျောက် ဖျက်ပေးတယ်
 
 ### ဥပမာ
 
@@ -44,12 +44,12 @@ Vault သုံးတာ (With Vault)
 
 ## Vault မသုံးတာ vs Vault သုံးတာ
 
-### ❌ Vault မသုံးတဲ့ နည်း (Traditional Way)
+### Vault မသုံးတဲ့ နည်း (Traditional Way)
 
 #### ၁. Code မှာ Password ရေးထားတယ်
 
 ```javascript
-// ❌ မကောင်းတဲ့ နည်း
+// မကောင်းတဲ့ နည်း
 // config.js
 module.exports = {
   database: {
@@ -71,7 +71,7 @@ const pool = new Pool({
 #### ၂. Environment Variables သုံးတယ် (ပိုကောင်းပေမဲ့ မလုံခြုံပါ)
 
 ```javascript
-// ⚠️ သာမန် နည်း (ပိုကောင်းပေမဲ့ မလုံခြုံပါ)
+// သာမန် နည်း (ပိုကောင်းပေမဲ့ မလုံခြုံပါ)
 // .env file
 DB_HOST=localhost
 DB_USER=myapp_user
@@ -97,12 +97,12 @@ const pool = new Pool({
 
 ---
 
-### ✅ Vault သုံးတဲ့ နည်း (Your Way)
+### Vault သုံးတဲ့ နည်း (Your Way)
 
 #### ၁. Code မှာ Password မပါပါ
 
 ```javascript
-// ✅ ကောင်းတဲ့ နည်း
+// ကောင်းတဲ့ နည်း
 // vault.js
 const vault = require('node-vault')({
   endpoint: process.env.VAULT_ADDR,
@@ -139,8 +139,8 @@ const pool = new Pool({
 │  Password: x-UWm8w6Bpaa9kG4llc4                             │
 │  Lease Duration: 3600 seconds (1 hour)                      │
 │                                                              │
-│  ⏰ Credentials will expire in 1 hour                       │
-│  🔄 Auto-renewal every 56 minutes                           │
+│  Credentials will expire in 1 hour                          │
+│  Auto-renewal every 56 minutes                              │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -205,16 +205,16 @@ With Vault:
 ```
 Without Vault:
 ┌──────────────────────────────────────┐
-│ ❌ Audit trail မရှိပါ                 │
-│ ❌ ဘယ်သူ ဝင်လဲ မသိပါ                  │
-│ ❌ Compliance မကျေနပ်ပါ               │
+│ Audit trail မရှိပါ                   │
+│ ဘယ်သူ ဝင်လဲ မသိပါ                    │
+│ Compliance မကျေနပ်ပါ                 │
 └──────────────────────────────────────┘
 
 With Vault:
 ┌──────────────────────────────────────┐
-│ ✅ အားလုံး log ရှိတယ်                  │
-│ ✅ ဘယ်သူ ဘယ်အချိန် ဝင်လဲ သိတယ်         │
-│ ✅ Compliance ကျေနပ်တယ်               │
+│ အားလုံး log ရှိတယ်                    │
+│ ဘယ်သူ ဘယ်အချိန် ဝင်လဲ သိတယ်           │
+│ Compliance ကျေနပ်တယ်                 │
 └──────────────────────────────────────┘
 ```
 
@@ -227,12 +227,12 @@ Without Vault:
 1. Developer A က password ကို သိနေတယ်
 2. Company ကနေ ထွက်သွားတယ်
 3. Password က တစ်ချိန်လုံး အတူတူပဲ
-4. ❌ Developer A က ဝင်နိုင်နေသေးတယ်
+4. Developer A က ဝင်နိုင်နေသေးတယ်
 
 With Vault:
 1. Developer A ထွက်သွားရင် Vault access ဖြုတ်လိုက်တယ်
 2. Dynamic credentials က ၁ နာရီမှာ သေသွားတယ်
-3. ✅ Developer A က ထပ်ဝင်လို့ မရတော့ပါ
+3. Developer A က ထပ်ဝင်လို့ မရတော့ပါ
 ```
 
 #### ဥပမာ ၂: Hacker ဝင်ရောက်ရင်
@@ -241,12 +241,12 @@ With Vault:
 Without Vault:
 1. Hacker က GitHub မှာ code ကို တွေ့တယ်
 2. config.js မှာ password ကို တွေ့တယ်
-3. ❌ Database ကို အမြဲတမ်း ဝင်နိုင်တယ်
+3. Database ကို အမြဲတမ်း ဝင်နိုင်တယ်
 
 With Vault:
 1. Hacker က GitHub မှာ code ကို တွေ့တယ်
 2. Password မတွေ့ပါ - code မှာ မရှိဘူး
-3. ✅ Database ကို ဝင်လို့မရပါ
+3. Database ကို ဝင်လို့မရပါ
 ```
 
 #### ဥပမာ ၃: Microservices
@@ -255,14 +255,14 @@ With Vault:
 Without Vault:
 Service A, B, C အားလုံး password အတူတူ သုံးတယ်
 → Service A ကို hack ခံရတယ်
-→ ❌ Service B, C ကိုလည်း ဝင်လို့ရတယ်
+→ Service B, C ကိုလည်း ဝင်လို့ရတယ်
 
 With Vault:
 Service A: v-token-aaa (unique)
 Service B: v-token-bbb (unique)
 Service C: v-token-ccc (unique)
 → Service A ကို hack ခံရတယ်
-→ ✅ Service B, C ကို ဝင်လို့မရပါ
+→ Service B, C ကို ဝင်လို့မရပါ
 ```
 
 ---
@@ -371,7 +371,7 @@ Service C: v-token-ccc (unique)
 │    password: "random123"         ← From Vault                │
 │  });                                                          │
 │                                                               │
-│  ✅ Connection established!                                   │
+│  Connection established!                                      │
 │                                                               │
 └────────────────────┬─────────────────────────────────────────┘
                      │
@@ -428,7 +428,7 @@ const vault = require('./vault');
 
 async function getDatabaseCredentials() {
   try {
-    // ⭐ This is the key line!
+    // This is the key line!
     const result = await vault.read('database/creds/app-role');
     
     // Extract username and password
@@ -436,7 +436,7 @@ async function getDatabaseCredentials() {
     const password = result.data.password;
     const leaseDuration = result.lease_duration;
     
-    console.log('✅ Got credentials from Vault:');
+    console.log('Got credentials from Vault:');
     console.log(`   Username: ${username}`);
     console.log(`   Valid for: ${leaseDuration} seconds`);
     
@@ -446,7 +446,7 @@ async function getDatabaseCredentials() {
       leaseDuration
     };
   } catch (error) {
-    console.error('❌ Failed to get credentials:', error.message);
+    console.error('Failed to get credentials:', error.message);
     throw error;
   }
 }
@@ -474,7 +474,7 @@ async function initializeDatabase() {
   
   // Test connection
   const client = await pool.connect();
-  console.log('✅ Database connected!');
+  console.log('Database connected!');
   client.release();
   
   return pool;
@@ -507,12 +507,12 @@ async function initializeDatabaseWithRenewal() {
     await renewCredentials();
   }, renewalTime);
   
-  console.log(`🔄 Will renew credentials in ${Math.round(renewalTime / 1000)} seconds`);
+  console.log(`Will renew credentials in ${Math.round(renewalTime / 1000)} seconds`);
 }
 
 async function renewCredentials() {
   try {
-    console.log('🔄 Renewing credentials...');
+    console.log('Renewing credentials...');
     
     // Get new credentials
     const newCreds = await getDatabaseCredentials();
@@ -534,7 +534,7 @@ async function renewCredentials() {
       await oldPool.end();
     }
     
-    console.log('✅ Credentials renewed!');
+    console.log('Credentials renewed!');
     
     // Schedule next renewal
     const renewalTime = newCreds.leaseDuration * 0.8 * 1000;
@@ -543,7 +543,7 @@ async function renewCredentials() {
     }, renewalTime);
     
   } catch (error) {
-    console.error('❌ Renewal failed:', error.message);
+    console.error('Renewal failed:', error.message);
     // Retry in 1 minute
     setTimeout(async () => {
       await renewCredentials();
@@ -580,7 +580,7 @@ async function getCredentialsManually() {
 
 ## အကျိုးကျေးဇူးများ
 
-### 📊 နှိုင်းယှဉ်ချက် Table
+### နှိုင်းယှဉ်ချက် Table
 
 | အချက် | Vault မသုံးရင် | Vault သုံးရင် |
 |-------|--------------|-------------|
@@ -591,10 +591,10 @@ async function getCredentialsManually() {
 | **Audit Trail** | မရှိပါ | အားလုံး log ရှိတယ် |
 | **Developer Access** | အားလုံး သိနေကြတယ် | မသိပါ (Vault ကသာ သိတယ်) |
 | **Microservices** | Password အတူတူ သုံးတယ် | Service တစ်ခုချင်းစီက unique |
-| **Compliance** | မကျေနပ်ပါ | ✅ Compliant |
-| **Security Level** | ❌ Low | ✅ High |
-| **Automation** | ❌ Manual | ✅ Automatic |
-| **Cost** | ✅ Free | ⚠️ Requires setup |
+| **Compliance** | မကျေနပ်ပါ | Compliant |
+| **Security Level** | Low | High |
+| **Automation** | Manual | Automatic |
+| **Cost** | Free | Requires setup |
 
 ---
 
@@ -747,7 +747,7 @@ async function getCredentialsManually() {
 │                                                               │
 │  Time  0:00 ────────────────────────────────────── 1:00     │
 │        │                                               │      │
-│        │  ✅ Credential Created                       │      │
+│        │  Credential Created                           │      │
 │        │  Username: v-token-abc123                    │      │
 │        │  Password: random123                         │      │
 │        │  Valid for: 3600 seconds                     │      │
@@ -758,49 +758,49 @@ async function getCredentialsManually() {
 │        │  │ - Everything is fine                │     │      │
 │        │  └─────────────────────────────────────┘     │      │
 │        │                                               │      │
-│        │  🔄 0:48 (56 minutes)                        │      │
+│        │  0:48 (56 minutes)                           │      │
 │        │  Auto-renewal triggered                      │      │
 │        │  - Get NEW credentials                       │      │
 │        │  - Username: v-token-xyz789 (NEW!)           │      │
 │        │  - Password: random456 (NEW!)                │      │
 │        │  - Replace old connection pool               │      │
 │        │                                               │      │
-│        │  ⏰ 1:00                                     │      │
-│        │  ❌ Old credential EXPIRES                   │      │
+│        │  1:00                                         │      │
+│        │  Old credential EXPIRES                       │      │
 │        │  - PostgreSQL automatically deletes user     │      │
 │        │  - v-token-abc123 no longer exists           │      │
 │        │                                               │      │
-│        │  ✅ Application continues with NEW creds     │      │
+│        │  Application continues with NEW creds        │      │
 │        │                                               │      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🎓 အချုပ်
+## အချုပ်
 
 ### Vault မသုံးရင်:
-- ❌ Password က code မှာ ပါနေတယ်
-- ❌ Password က ဘယ်တော့မှ မပြောင်းဘူး
-- ❌ Hacker ကို အမြဲတမ်း ဝင်ခွင့်ပေးလိုက်တယ်
-- ❌ Audit log မရှိလို့ ဘယ်သူ ဝင်လဲ မသိဘူး
-- ❌ Manual management ပဲ လုပ်နိုင်တယ်
+- Password က code မှာ ပါနေတယ်
+- Password က ဘယ်တော့မှ မပြောင်းဘူး
+- Hacker ကို အမြဲတမ်း ဝင်ခွင့်ပေးလိုက်တယ်
+- Audit log မရှိလို့ ဘယ်သူ ဝင်လဲ မသိဘူး
+- Manual management ပဲ လုပ်နိုင်တယ်
 
 ### Vault သုံးရင်:
-- ✅ Password က code မှာ မပါပါ
-- ✅ Password က တစ်နာရီခြား အသစ်ဖြစ်တယ်
-- ✅ Hacker ကို ၁ နာရီပဲ ဝင်ခွင့်ပေးတယ်
-- ✅ Audit log ရှိလို့ အားလုံး သိနိုင်တယ်
-- ✅ Automatic management ဖြစ်တယ်
+- Password က code မှာ မပါပါ
+- Password က တစ်နာရီခြား အသစ်ဖြစ်တယ်
+- Hacker ကို ၁ နာရီပဲ ဝင်ခွင့်ပေးတယ်
+- Audit log ရှိလို့ အားလုံး သိနိုင်တယ်
+- Automatic management ဖြစ်တယ်
 
 ### ဘာကြောင့် Vault သုံးသလဲ:
 **"Password ကို code မှာ မရေးပါနဲ့။ Vault ကနေ အလိုအလျောက် ယူပါ။"**
 
-ဒါဟာ Enterprise-grade security ဖြစ်ပြီး ကမ္ဘာကြီးရဲ့ အကြီးကျယ်ဆုံး company တွေ အားလုံး သုံးနေကြတဲ့ pattern ဖြစ်ပါတယ်! 🎯
+ဒါဟာ Enterprise-grade security ဖြစ်ပြီး ကမ္ဘာကြီးရဲ့ အကြီးကျယ်ဆုံး company တွေ အားလုံး သုံးနေကြတဲ့ pattern ဖြစ်ပါတယ်!
 
 ---
 
-## 📚 ဆက်လက်လေ့လာရန်
+## ဆက်လက်လေ့လာရန်
 
 - [Vault Official Documentation](https://www.vaultproject.io/docs)
 - [Database Secrets Engine](https://www.vaultproject.io/docs/secrets/databases)
@@ -809,4 +809,4 @@ async function getCredentialsManually() {
 
 ---
 
-**© 2026 - Vault Lab Documentation (Burmese)**
+**2026 - Vault Lab Documentation (Burmese)**
