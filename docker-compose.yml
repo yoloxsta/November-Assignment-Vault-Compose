@@ -3,7 +3,7 @@ services:
   # VAULT SERVER - Secrets Management
   # ============================================
   vault:
-    image: hashicorp/vault:1.18
+    image: hashicorp/vault:latest
     container_name: vault-server
     ports:
       - "8200:8200"
