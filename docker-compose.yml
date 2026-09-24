@@ -1,0 +1,110 @@
+services:
+  # ============================================
+  # VAULT SERVER - Secrets Management
+  # ============================================
+  vault:
+    image: hashicorp/vault:1.18
+    container_name: vault-server
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: "dev-only-token"
+      VAULT_ADDR: "http://0.0.0.0:8200"
+    cap_add:
+      - IPC_LOCK
+    networks:
+      - vault-network
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ============================================
+  # POSTGRESQL DATABASE
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: vault-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vault_demo
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - vault-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ============================================
+  # BACKEND - Node.js API with Vault Integration
+  # ============================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vault-backend
+    ports:
+      - "3000:3000"
+    environment:
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=dev-only-token
+      - NODE_ENV=development
+      - PORT=3000
+    depends_on:
+      vault:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    networks:
+      - vault-network
+    restart: unless-stopped
+
+  # ============================================
+  # FRONTEND - React UI for Vault Interaction
+  # ============================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vault-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:3000
+      - VITE_VAULT_ADDR=http://localhost:8200
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - vault-network
+    restart: unless-stopped
+
+# ============================================
+# NETWORKS
+# ============================================
+networks:
+  vault-network:
+    driver: bridge
+
+# ============================================
+# VOLUMES
+# ============================================
+volumes:
+  postgres-data:
+    driver: local
+  vault-logs:
+    driver: local
