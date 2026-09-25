@@ -268,3 +268,15 @@ docker-compose down --rmi all -v
 ---
 
 You now have a production-ready 3-tier application with enterprise-grade secrets management!
+
+########
+
+```
+docker cp setup-vault-commands.sh vault-server:/tmp/setup.sh 2>&1
+
+docker exec vault-server sh /tmp/setup.sh 2>&1
+
+docker restart vault-backend 2>&1
+
+
+```
