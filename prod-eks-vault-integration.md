@@ -1,189 +1,1033 @@
-# Production EKS + Vault Integration Guide
+# Complete Guide: Deploy Vault on AWS EKS with Full Stack Integration
 
-Complete step-by-step guide for integrating a Node.js application running on Amazon EKS with HashiCorp Vault for dynamic database credentials.
+**A comprehensive, step-by-step guide for deploying HashiCorp Vault on Amazon EKS with public access, user authentication, frontend, backend, RDS, and API key management.**
 
 ---
 
 ## Table of Contents
 
-1. [Architecture Overview](#architecture-overview)
-2. [Prerequisites](#prerequisites)
-3. [Method 1: Kubernetes Authentication (Recommended)](#method-1-kubernetes-authentication-recommended)
-4. [Method 2: Vault Agent Sidecar](#method-2-vault-agent-sidecar)
-5. [Method 3: AppRole Authentication](#method-3-approle-authentication)
-6. [Security Best Practices](#security-best-practices)
-7. [Troubleshooting](#troubleshooting)
+1. [What, Why, How Overview](#what-why-how-overview)
+2. [Architecture Diagram](#architecture-diagram)
+3. [Prerequisites](#prerequisites)
+4. [Part 1: Deploy EKS Cluster](#part-1-deploy-eks-cluster)
+5. [Part 2: Deploy RDS PostgreSQL](#part-2-deploy-rds-postgresql)
+6. [Part 3: Deploy Vault on EKS](#part-3-deploy-vault-on-eks)
+7. [Part 4: Configure Vault for Production](#part-4-configure-vault-for-production)
+8. [Part 5: Create User Authentication](#part-5-create-user-authentication)
+9. [Part 6: Configure Database Secrets Engine](#part-6-configure-database-secrets-engine)
+10. [Part 7: Manage API Keys in Vault](#part-7-manage-api-keys-in-vault)
+11. [Part 8: Deploy Backend Application](#part-8-deploy-backend-application)
+12. [Part 9: Deploy Frontend Application](#part-9-deploy-frontend-application)
+13. [Part 10: Developer Access Management](#part-10-developer-access-management)
+14. [Part 11: Monitoring and Maintenance](#part-11-monitoring-and-maintenance)
+15. [Part 12: Troubleshooting](#part-12-troubleshooting)
+16. [Summary and Checklist](#summary-and-checklist)
 
 ---
 
-## Architecture Overview
+## What, Why, How Overview
 
-### Production Architecture
+### What is Vault?
+
+**HashiCorp Vault** is a secrets management tool that provides:
+- **Dynamic secrets**: Auto-generate database credentials, API keys, certificates
+- **Encryption as a Service**: Encrypt data without managing keys
+- **Secrets management**: Store and access secrets securely
+- **Identity-based access**: Fine-grained access control
+
+### Why Use Vault?
+
+| Problem | Without Vault | With Vault |
+|---------|---------------|------------|
+| **Database passwords** | Hardcoded in config files, never change | Auto-generated, rotate every hour |
+| **API keys** | Stored in code, Git, environment variables | Stored centrally, accessed on-demand |
+| **Access control** | Shared passwords, no audit trail | Individual users, full audit logging |
+| **Secrets rotation** | Manual process, often forgotten | Automatic rotation, never expires |
+| **Compliance** | Hard to prove security | Full audit trail, compliance ready |
+
+### How Vault Works
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              AWS Cloud                                       │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌──────────────────────────────────────┐    ┌───────────────────────────┐ │
-│  │         EKS Cluster                   │    │    Vault Infrastructure   │ │
-│  │                                       │    │                           │ │
-│  │  ┌─────────────────────────────────┐ │    │  ┌─────────────────────┐  │ │
-│  │  │  Namespace: production          │ │    │  │ Vault Server (HA)  │  │ │
-│  │  │                                 │ │    │  │                     │  │ │
-│  │  │  ┌───────────────────────────┐  │ │    │  │  - 3 replicas      │  │ │
-│  │  │  │  Backend Deployment       │  │ │    │  │  - Raft storage    │  │ │
-│  │  │  │                           │  │ │    │  │  - Auto-unseal     │  │ │
-│  │  │  │  ┌─────────┐ ┌─────────┐  │  │ │    │  │    (AWS KMS)       │  │ │
-│  │  │  │  │ Pod 1   │ │ Pod 2   │  │  │ │    │  │                     │  │ │
-│  │  │  │  │         │ │         │  │  │ │    │  └──────────┬──────────┘  │ │
-│  │  │  │  │ Service │ │ Service │  │  │ │    │             │             │ │
-│  │  │  │  │ Account │ │ Account │  │  │ │    │             │             │ │
-│  │  │  │  │ JWT     │ │ JWT     │  │  │ │    │             │             │ │
-│  │  │  │  └────┬────┘ └────┬────┘  │  │ │    │             │             │ │
-│  │  │  │       │           │       │  │ │    │             │             │ │
-│  │  │  └───────┼───────────┼───────┘  │ │    │             │             │ │
-│  │  │          │           │          │ │    │             │             │ │
-│  │  └──────────┼───────────┼──────────┘ │    │             │             │ │
-│  │             │           │            │    │             │             │ │
-│  │             └─────┬─────┘            │    │             │             │ │
-│  │                   │                  │    │             │             │ │
-│  │                   │ Kubernetes Auth  │    │             │             │ │
-│  │                   │                  │    │             │             │ │
-│  │                   ▼                  │    │             ▼             │ │
-│  │  ┌─────────────────────────────────┐ │    │  ┌─────────────────────┐  │ │
-│  │  │  Network Policy / Security Group│ │    │  │  PostgreSQL (RDS)   │  │ │
-│  │  │  Allow: EKS → Vault :8200       │ │    │  │                     │  │ │
-│  │  │  Allow: EKS → RDS :5432         │ │    │  │  Primary + Replica  │  │ │
-│  │  └─────────────────────────────────┘ │    │  │  Multi-AZ           │  │ │
-│  │                                       │    │  └─────────────────────┘  │ │
-│  └──────────────────────────────────────┘    └───────────────────────────┘ │
-│                                                                             │
-│  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │                        Supporting Services                            │  │
-│  │                                                                        │  │
-│  │  - AWS KMS (Auto-unseal)                                              │  │
-│  │  - AWS Secrets Manager (Vault unseal keys backup)                     │  │
-│  │  - AWS S3 (Vault Raft storage snapshots)                              │  │
-│  │  - AWS IAM (Service accounts via IRSA)                                │  │
-│  │                                                                        │  │
-│  └──────────────────────────────────────────────────────────────────────┘  │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                        How Vault Works                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. User/Service authenticates to Vault                         │
+│     └─► Username + Password, Kubernetes Auth, AppRole, etc.     │
+│                                                                 │
+│  2. Vault validates identity and returns a token                │
+│     └─► Token has policies attached (permissions)               │
+│                                                                 │
+│  3. User/Service uses token to request secrets                  │
+│     └─► GET /v1/database/creds/app-role                         │
+│                                                                 │
+│  4. Vault generates secrets dynamically                         │
+│     └─► Creates database user with random password              │
+│     └─► Returns: { username: "v-token-xxx", password: "..." }   │
+│                                                                 │
+│  5. Secrets have lease duration (auto-expire)                   │
+│     └─► 1 hour default, automatically revoked after expiry      │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Why Deploy on EKS?
+
+| Feature | Benefit |
+|---------|---------|
+| **High Availability** | Multiple replicas across availability zones |
+| **Auto-scaling** | Scale based on demand |
+| **Kubernetes Integration** | Native pod authentication |
+| **AWS Integration** | KMS auto-unseal, RDS, IAM |
+| **Cost Effective** | Pay for what you use |
+| **Managed Service** | AWS handles the infrastructure |
+
+---
+
+## Architecture Diagram
+
+### Complete Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              AWS Cloud (us-east-1)                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │                            Internet Gateway                                │ │
+│  │                         (Public Internet Access)                           │ │
+│  └────────────────────────────────┬──────────────────────────────────────────┘ │
+│                                   │                                             │
+│                                   ▼                                             │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │                          Application Load Balancer                         │ │
+│  │                                                                              │ │
+│  │   vault.example.com ──────────────────► Vault UI (Public)                 │ │
+│  │   api.example.com   ──────────────────► Backend API (Public)              │ │
+│  │   app.example.com   ──────────────────► Frontend (Public)                 │ │
+│  │                                                                              │ │
+│  └────────────────────────────────┬──────────────────────────────────────────┘ │
+│                                   │                                             │
+│                                   ▼                                             │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │                              EKS Cluster                                   │ │
+│  │                                                                              │ │
+│  │  ┌────────────────────────────────────────────────────────────────────┐   │ │
+│  │  │                    Kubernetes Namespace: vault                      │   │ │
+│  │  │                                                                     │   │ │
+│  │  │  ┌──────────────────────────────────────────────────────────────┐  │   │ │
+│  │  │  │                    Vault StatefulSet                          │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │  │   │ │
+│  │  │  │   │  vault-0    │  │  vault-1    │  │  vault-2    │        │  │   │ │
+│  │  │  │   │  (Leader)   │  │  (Standby)  │  │  (Standby)  │        │  │   │ │
+│  │  │  │   │             │  │             │  │             │        │  │   │ │
+│  │  │  │   │ Port: 8200  │  │ Port: 8200  │  │ Port: 8200  │        │  │   │ │
+│  │  │  │   │ Port: 8201  │  │ Port: 8201  │  │ Port: 8201  │        │  │   │ │
+│  │  │  │   └─────────────┘  └─────────────┘  └─────────────┘        │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  │   Storage: Raft (replicated)                                 │  │   │ │
+│  │  │  │   Auto-unseal: AWS KMS                                       │  │   │ │
+│  │  │  │   Snapshots: S3                                              │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  └──────────────────────────────────────────────────────────────┘  │   │ │
+│  │  │                                                                     │   │ │
+│  │  │  ┌──────────────────────────────────────────────────────────────┐  │   │ │
+│  │  │  │              Vault Agent Injector (DaemonSet)                │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  │   Injects secrets into pods automatically                     │  │   │ │
+│  │  │  │   Manages token renewal                                       │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  └──────────────────────────────────────────────────────────────┘  │   │ │
+│  │  │                                                                     │   │ │
+│  │  └────────────────────────────────────────────────────────────────────┘   │ │
+│  │                                                                              │ │
+│  │  ┌────────────────────────────────────────────────────────────────────┐   │ │
+│  │  │                 Kubernetes Namespace: production                   │   │ │
+│  │  │                                                                     │   │ │
+│  │  │  ┌──────────────────────────────────────────────────────────────┐  │   │ │
+│  │  │  │                    Backend Deployment                         │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │  │   │ │
+│  │  │  │   │  backend    │  │  backend    │  │  backend    │        │  │   │ │
+│  │  │  │   │  pod-1      │  │  pod-2      │  │  pod-3      │        │  │   │ │
+│  │  │  │   │             │  │             │  │             │        │  │   │ │
+│  │  │  │   │ Service     │  │ Service     │  │ Service     │        │  │   │ │
+│  │  │  │   │ Account:    │  │ Account:    │  │ Account:    │        │  │   │ │
+│  │  │  │   │ backend-sa  │  │ backend-sa  │  │ backend-sa  │        │  │   │ │
+│  │  │  │   └─────────────┘  └─────────────┘  └─────────────┘        │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  │   ┌─────────────────────────────────────────────────┐       │  │   │ │
+│  │  │  │   │         Service: backend-service               │       │  │   │ │
+│  │  │  │   │         Port: 80 → Container: 3000             │       │  │   │ │
+│  │  │  │   └─────────────────────────────────────────────────┘       │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  └──────────────────────────────────────────────────────────────┘  │   │ │
+│  │  │                                                                     │   │ │
+│  │  │  ┌──────────────────────────────────────────────────────────────┐  │   │ │
+│  │  │  │                    Frontend Deployment                        │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  │   ┌─────────────┐  ┌─────────────┐                         │  │   │ │
+│  │  │  │   │  frontend   │  │  frontend   │                         │  │   │ │
+│  │  │  │   │  pod-1      │  │  pod-2      │                         │  │   │ │
+│  │  │  │   │             │  │             │                         │  │   │ │
+│  │  │  │   │ Nginx +     │  │ Nginx +     │                         │  │   │ │
+│  │  │  │   │ React Build │  │ React Build │                         │  │   │ │
+│  │  │  │   └─────────────┘  └─────────────┘                         │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  │   ┌─────────────────────────────────────────────────┐       │  │   │ │
+│  │  │  │   │         Service: frontend-service              │       │  │   │ │
+│  │  │  │   │         Port: 80 → Container: 80              │       │  │   │ │
+│  │  │  │   └─────────────────────────────────────────────────┘       │  │   │ │
+│  │  │  │                                                               │  │   │ │
+│  │  │  └──────────────────────────────────────────────────────────────┘  │   │ │
+│  │  │                                                                     │   │ │
+│  │  └────────────────────────────────────────────────────────────────────┘   │ │
+│  │                                                                              │ │
+│  └───────────────────────────────────────────────────────────────────────────┘ │
+│                                   │                                             │
+│                                   │                                             │
+│                                   ▼                                             │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │                              AWS RDS                                       │ │
+│  │                                                                              │ │
+│  │  ┌─────────────────────────────────────────────────────────────────────┐  │ │
+│  │  │                    PostgreSQL Database                               │  │ │
+│  │  │                                                                      │  │ │
+│  │  │   ┌─────────────────────┐  ┌─────────────────────┐                 │  │ │
+│  │  │   │   Primary Instance  │  │  Read Replica       │                 │  │ │
+│  │  │   │   (Multi-AZ)        │  │  (Optional)         │                 │  │ │
+│  │  │   │                     │  │                     │                 │  │ │
+│  │  │   │   vault_admin       │  │                     │                 │  │ │
+│  │  │   │   (Static user for  │  │                     │                 │  │ │
+│  │  │   │    Vault)           │  │                     │                 │  │ │
+│  │  │   └─────────────────────┘  └─────────────────────┘                 │  │ │
+│  │  │                                                                      │  │ │
+│  │  │   Database: app_production                                          │  │ │
+│  │  │   Port: 5432                                                         │  │ │
+│  │  │   Encryption: At-rest (KMS)                                         │  │ │
+│  │  │   SSL: Required                                                      │  │ │
+│  │  │                                                                      │  │ │
+│  │  └─────────────────────────────────────────────────────────────────────┘  │ │
+│  │                                                                              │ │
+│  └───────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                 │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │                          AWS Supporting Services                           │ │
+│  │                                                                              │ │
+│  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐           │ │
+│  │  │    AWS KMS      │  │    AWS S3       │  │   AWS Secrets   │           │ │
+│  │  │                 │  │                 │  │    Manager      │           │ │
+│  │  │ Auto-unseal     │  │ Vault backups   │  │ Root token     │           │ │
+│  │  │ Encryption      │  │ Raft snapshots  │  │ recovery       │           │ │
+│  │  │                 │  │                 │  │                 │           │ │
+│  │  └─────────────────┘  └─────────────────┘  └─────────────────┘           │ │
+│  │                                                                              │ │
+│  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐           │ │
+│  │  │    AWS IAM      │  │  Route 53       │  │  AWS ACM        │           │ │
+│  │  │                 │  │                 │  │                 │           │ │
+│  │  │ Service         │  │ DNS for         │  │ SSL/TLS         │           │ │
+│  │  │ accounts        │  │ vault.example   │  │ Certificates    │           │ │
+│  │  │ (IRSA)          │  │ api.example     │  │                 │           │ │
+│  │  │                 │  │ app.example     │  │                 │           │ │
+│  │  └─────────────────┘  └─────────────────┘  └─────────────────┘           │ │
+│  │                                                                              │ │
+│  └───────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Authentication Flow
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                    Kubernetes Authentication Flow                         │
-├──────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  1. Pod Starts                                                           │
-│     └─► Kubernetes mounts Service Account JWT                            │
-│         /var/run/secrets/kubernetes.io/serviceaccount/token              │
-│                                                                          │
-│  2. Application Initializes                                              │
-│     └─► Reads JWT from file                                              │
-│     └─► Sends to Vault: POST /v1/auth/kubernetes/login                   │
-│         {                                                                │
-│           "role": "backend-role",                                        │
-│           "jwt": "eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9..."                   │
-│         }                                                                │
-│                                                                          │
-│  3. Vault Validates                                                      │
-│     └─► Calls Kubernetes TokenReview API                                 │
-│     └─► Verifies:                                                        │
-│         - Service Account name matches role                              │
-│         - Namespace matches bound_service_account_namespaces             │
-│         - JWT is valid and not expired                                   │
-│                                                                          │
-│  4. Vault Returns Token                                                  │
-│     {                                                                    │
-│       "auth": {                                                          │
-│         "client_token": "s.abcdef123456",                                │
-│         "lease_duration": 3600,                                          │
-│         "policies": ["backend-policy"]                                   │
-│       }                                                                  │
-│     }                                                                    │
-│                                                                          │
-│  5. Application Uses Token                                               │
-│     └─► GET /v1/database/creds/app-role                                  │
-│     └─► Header: X-Vault-Token: s.abcdef123456                            │
-│     └─► Returns: { "username": "v-token-xxx", "password": "..." }        │
-│                                                                          │
-│  6. Database Connection                                                  │
-│     └─► App connects to RDS with dynamic credentials                     │
-│     └─► Vault created user in PostgreSQL                                 │
-│     └─► Credentials auto-expire after lease_duration                     │
-│                                                                          │
-└──────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                    Complete Authentication & Secret Access Flow               │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  SCENARIO 1: Developer Accessing Vault UI                                    │
+│  ────────────────────────────────────────────                                │
+│                                                                              │
+│  ┌─────────────┐                                                            │
+│  │  Developer  │                                                            │
+│  │  (Alice)    │                                                            │
+│  └──────┬──────┘                                                            │
+│         │                                                                    │
+│         │ 1. Opens browser to https://vault.example.com/ui                  │
+│         │                                                                    │
+│         ▼                                                                    │
+│  ┌─────────────────────────────────────────────────────┐                    │
+│  │              Vault UI (Public)                      │                    │
+│  │                                                      │                    │
+│  │  Method: Username & Password                        │                    │
+│  │  Username: alice@company.com                        │                    │
+│  │  Password: ********                                 │                    │
+│  │                                                      │                    │
+│  └──────────────────────┬──────────────────────────────┘                    │
+│                         │                                                    │
+│                         │ 2. Vault validates credentials                    │
+│                         │    Checks policies for alice@company.com          │
+│                         │                                                    │
+│                         ▼                                                    │
+│  ┌─────────────────────────────────────────────────────┐                    │
+│  │  Vault returns token with policies attached:        │                    │
+│  │                                                      │                    │
+│  │  Token: s.xxxxxxxx                                  │                    │
+│  │  Policies: [developer-read-only]                    │                    │
+│  │  TTL: 8 hours                                       │                    │
+│  │                                                      │                    │
+│  └──────────────────────┬──────────────────────────────┘                    │
+│                         │                                                    │
+│                         │ 3. Developer can now:                             │
+│                         │    - View secrets (read-only)                     │
+│                         │    - Cannot modify secrets                        │
+│                         │    - Cannot access admin paths                    │
+│                         │                                                    │
+│                         ▼                                                    │
+│  ┌─────────────────────────────────────────────────────┐                    │
+│  │  What Alice Can Access:                             │                    │
+│  │                                                      │                    │
+│  │  ✅ READ database/creds/app-role                    │                    │
+│  │  ✅ READ secret/data/api-keys/stripe                │                    │
+│  │  ✅ READ secret/data/api-keys/sendgrid              │                    │
+│  │  ❌ WRITE secret/data/*                             │                    │
+│  │  ❌ READ database/config/*                          │                    │
+│  │  ❌ READ sys/*                                      │                    │
+│  │                                                      │                    │
+│  └─────────────────────────────────────────────────────┘                    │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  SCENARIO 2: Backend Pod Getting Database Credentials                        │
+│  ─────────────────────────────────────────────────────────────               │
+│                                                                              │
+│  ┌─────────────────┐                                                        │
+│  │  Backend Pod    │                                                        │
+│  │  (backend-abc)  │                                                        │
+│  │                 │                                                        │
+│  │  Service        │                                                        │
+│  │  Account:       │                                                        │
+│  │  backend-sa     │                                                        │
+│  └────────┬────────┘                                                        │
+│           │                                                                  │
+│           │ 1. Read mounted JWT token                                       │
+│           │    /var/run/secrets/kubernetes.io/                              │
+│           │    serviceaccount/token                                         │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌─────────────────────────────────────────────────────┐                    │
+│  │  2. Login to Vault with Kubernetes Auth:            │                    │
+│  │                                                      │                    │
+│  │  POST /v1/auth/kubernetes/login                     │                    │
+│  │  {                                                  │                    │
+│  │    "role": "backend-role",                          │                    │
+│  │    "jwt": "eyJhbGciOiJSUzI1NiIs..."                 │                    │
+│  │  }                                                  │                    │
+│  │                                                      │                    │
+│  └──────────────────────┬──────────────────────────────┘                    │
+│                         │                                                    │
+│                         │ 3. Vault validates:                               │
+│                         │    - JWT signature (via K8s API)                  │
+│                         │    - Service account: backend-sa                  │
+│                         │    - Namespace: production                        │
+│                         │    - Role: backend-role exists                    │
+│                         │                                                    │
+│                         ▼                                                    │
+│  ┌─────────────────────────────────────────────────────┐                    │
+│  │  4. Vault returns token:                            │                    │
+│  │                                                      │                    │
+│  │  {                                                  │                    │
+│  │    "auth": {                                        │                    │
+│  │      "client_token": "s.yyyyyyyy",                  │                    │
+│  │      "policies": ["backend-policy"],                │                    │
+│  │      "lease_duration": 3600                         │                    │
+│  │    }                                                │                    │
+│  │  }                                                  │                    │
+│  │                                                      │                    │
+│  └──────────────────────┬──────────────────────────────┘                    │
+│                         │                                                    │
+│                         │ 5. Get database credentials:                      │
+│                         │                                                    │
+│                         │    GET /v1/database/creds/app-role                │
+│                         │    Header: X-Vault-Token: s.yyyyyyyy              │
+│                         │                                                    │
+│                         ▼                                                    │
+│  ┌─────────────────────────────────────────────────────┐                    │
+│  │  6. Vault creates temporary database user:          │                    │
+│  │                                                      │                    │
+│  │  - Connects to RDS as vault_admin                   │                    │
+│  │  - Executes: CREATE ROLE "v-token-xxx" ...          │                    │
+│  │  - Returns:                                         │                    │
+│  │    {                                                │                    │
+│  │      "username": "v-token-app-abc123",              │                    │
+│  │      "password": "random-secure-password",          │                    │
+│  │      "lease_duration": 3600                         │                    │
+│  │    }                                                │                    │
+│  │                                                      │                    │
+│  └──────────────────────┬──────────────────────────────┘                    │
+│                         │                                                    │
+│                         │ 7. Backend connects to RDS:                       │
+│                         │                                                    │
+│                         ▼                                                    │
+│  ┌─────────────────────────────────────────────────────┐                    │
+│  │  ┌─────────────────┐      ┌─────────────────┐      │                    │
+│  │  │  Backend Pod    │      │   RDS PostgreSQL│      │                    │
+│  │  │                 │      │                 │      │                    │
+│  │  │  User: v-token- │─────►│  User exists:   │      │                    │
+│  │  │  app-abc123     │      │  v-token-app-   │      │                    │
+│  │  │  Pass: random-  │      │  abc123         │      │                    │
+│  │  │  secure-pass    │      │                 │      │                    │
+│  │  └─────────────────┘      └─────────────────┘      │                    │
+│  │                                                      │                    │
+│  │  Connection: SUCCESS!                               │                    │
+│  │                                                      │                    │
+│  │  8. Auto-renewal at 80% of lease (2880s)           │                    │
+│  │                                                      │                    │
+│  └─────────────────────────────────────────────────────┘                    │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  SCENARIO 3: Backend Getting API Keys                                        │
+│  ─────────────────────────────────────────                                    │
+│                                                                              │
+│  ┌─────────────────┐                                                        │
+│  │  Backend Pod    │                                                        │
+│  │                 │                                                        │
+│  │  Needs:         │                                                        │
+│  │  - Stripe API   │                                                        │
+│  │  - SendGrid API │                                                        │
+│  └────────┬────────┘                                                        │
+│           │                                                                  │
+│           │ Already has token from Kubernetes auth                          │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌─────────────────────────────────────────────────────┐                    │
+│  │  GET /v1/secret/data/api-keys/stripe                │                    │
+│  │  Header: X-Vault-Token: s.yyyyyyyy                  │                    │
+│  │                                                      │                    │
+│  │  Response:                                          │                    │
+│  │  {                                                  │                    │
+│  │    "data": {                                        │                    │
+│  │      "data": {                                      │                    │
+│  │        "api_key": "sk_live_xxxxx",                  │                    │
+│  │        "webhook_secret": "whsec_xxxxx"              │                    │
+│  │      }                                              │                    │
+│  │    }                                                │                    │
+│  │  }                                                  │                    │
+│  │                                                      │                    │
+│  └─────────────────────────────────────────────────────┘                    │
+│                                                                              │
+│  Same process for SendGrid, Twilio, etc.                                    │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Prerequisites
 
-### Required Tools
+### What You Need
+
+#### 1. AWS Account
+- AWS account with admin access
+- AWS CLI installed and configured
+- Region: `us-east-1` (or your preferred region)
+
+#### 2. Local Tools
 
 ```bash
-# Install required CLI tools
-brew install kubectl helm vault awscli
+# Install required tools
 
-# Verify installations
-kubectl version --client
-helm version
-vault version
+# AWS CLI
+brew install awscli
 aws --version
+# Should be 2.x or higher
+
+# kubectl
+brew install kubectl
+kubectl version --client
+
+# Helm
+brew install helm
+helm version
+
+# Vault CLI
+brew install vault
+vault version
+
+# eksctl (for EKS cluster creation)
+brew install eksctl
+eksctl version
+
+# jq (for JSON processing)
+brew install jq
+jq --version
+
+# OpenSSL (for certificate generation)
+openssl version
 ```
 
-### AWS Resources Required
+#### 3. Domain Name
 
-1. **EKS Cluster** (1.24+)
-2. **RDS PostgreSQL** instance
-3. **AWS KMS** key for Vault auto-unseal
-4. **IAM OIDC Provider** for IRSA (IAM Roles for Service Accounts)
+You need a domain name (e.g., `example.com`) for:
+- `vault.example.com` - Vault UI
+- `api.example.com` - Backend API
+- `app.example.com` - Frontend
 
-### Verify EKS Cluster
+#### 4. Estimated Costs
+
+| Service | Cost (Monthly) |
+|---------|---------------|
+| EKS Cluster | $73 |
+| EKS Nodes (3x m5.large) | $210 |
+| RDS PostgreSQL (db.r5.large) | $175 |
+| Application Load Balancer | $20 |
+| NAT Gateway (2x) | $64 |
+| Data Transfer | ~$20 |
+| KMS, S3, etc. | ~$10 |
+| **Total** | **~$572/month** |
+
+> **Note**: You can reduce costs by using smaller instance types for development.
+
+---
+
+## Part 1: Deploy EKS Cluster
+
+### What We're Doing
+
+Creating an Amazon EKS (Elastic Kubernetes Service) cluster where all our applications will run.
+
+### Why EKS?
+
+| Feature | Benefit |
+|---------|---------|
+| Managed Kubernetes | AWS manages the control plane |
+| High Availability | Multiple availability zones |
+| Auto-scaling | Automatically scale nodes |
+| Integration | Works with IAM, RDS, KMS |
+
+### Step-by-Step Instructions
+
+#### Step 1.1: Configure AWS CLI
 
 ```bash
-# Configure kubectl for your EKS cluster
-aws eks update-kubeconfig --region us-east-1 --name my-eks-cluster
+# Configure AWS CLI
+aws configure
+
+# Enter when prompted:
+# AWS Access Key ID: YOUR_ACCESS_KEY
+# AWS Secret Access Key: YOUR_SECRET_KEY
+# Default region: us-east-1
+# Default output format: json
+
+# Verify configuration
+aws sts get-caller-identity
+
+# Expected output:
+# {
+#   "UserId": "AIDAXXXXXXXXXXXXX",
+#   "Account": "123456789012",
+#   "Arn": "arn:aws:iam::123456789012:user/your-username"
+# }
+```
+
+#### Step 1.2: Create VPC for EKS
+
+Create `vpc.yaml`:
+
+```yaml
+# vpc.yaml
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: vault-cluster
+  region: us-east-1
+
+vpc:
+  id: vpc-xxxxxx  # Will be created automatically if not specified
+  cidr: 10.0.0.0/16
+  
+  subnets:
+    private:
+      us-east-1a:
+        cidr: 10.0.1.0/24
+      us-east-1b:
+        cidr: 10.0.2.0/24
+      us-east-1c:
+        cidr: 10.0.3.0/24
+    public:
+      us-east-1a:
+        cidr: 10.0.101.0/24
+      us-east-1b:
+        cidr: 10.0.102.0/24
+      us-east-1c:
+        cidr: 10.0.103.0/24
+
+  nat:
+    gateway: HighlyAvailable  # One NAT gateway per AZ
+```
+
+#### Step 1.3: Create EKS Cluster
+
+```bash
+# Create EKS cluster (takes 15-20 minutes)
+eksctl create cluster \
+  --name vault-cluster \
+  --region us-east-1 \
+  --version 1.28 \
+  --nodegroup-name standard-workers \
+  --node-type m5.large \
+  --nodes 3 \
+  --nodes-min 3 \
+  --nodes-max 5 \
+  --managed \
+  --with-oidc \
+  --ssh-access \
+  --ssh-public-key ~/.ssh/id_rsa.pub
+
+# Expected output:
+# [✔]  EKS cluster "vault-cluster" in "us-east-1" region is ready
+```
+
+**What this does:**
+- Creates VPC with public and private subnets
+- Deploys EKS control plane (managed by AWS)
+- Creates 3 worker nodes (m5.large instances)
+- Enables OIDC for IAM roles for service accounts
+- Configures kubectl context
+
+#### Step 1.4: Verify Cluster Access
+
+```bash
+# Update kubeconfig
+aws eks update-kubeconfig \
+  --region us-east-1 \
+  --name vault-cluster
 
 # Verify connection
 kubectl get nodes
 
 # Expected output:
 # NAME                                       STATUS   ROLES    AGE   VERSION
-# ip-10-0-1-100.us-east-1.compute.internal   Ready    <none>   30d   v1.28.0
-# ip-10-0-2-100.us-east-1.compute.internal   Ready    <none>   30d   v1.28.0
-```
+# ip-10-0-1-100.us-east-1.compute.internal   Ready    <none>   5m    v1.28.0
+# ip-10-0-2-100.us-east-1.compute.internal   Ready    <none>   5m    v1.28.0
+# ip-10-0-3-100.us-east-1.compute.internal   Ready    <none>   5m    v1.28.0
 
-### Verify IAM OIDC Provider
-
-```bash
-# Get OIDC provider URL
-aws eks describe-cluster \
-  --name my-eks-cluster \
-  --query "cluster.identity.oidc.issuer" \
-  --output text
+# Verify namespaces
+kubectl get namespaces
 
 # Expected output:
-# https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D18xxx
+# NAME              STATUS   AGE
+# default           Active   5m
+# kube-node-lease   Active   5m
+# kube-public       Active   5m
+# kube-system       Active   5m
+```
 
-# Verify OIDC provider exists in IAM
-aws iam list-open-id-connect-providers \
-  --query "OpenIDConnectProviderList[?contains(Arn, 'EXAMPLED539D18xxx')].Arn" \
-  --output text
+#### Step 1.5: Install Essential Add-ons
+
+```bash
+# Install AWS Load Balancer Controller
+# Required for ALB Ingress
+
+# 1. Create IAM policy
+curl -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.5.4/docs/install/iam_policy.json
+
+aws iam create-policy \
+  --policy-name AWSLoadBalancerControllerIAMPolicy \
+  --policy-document file://iam-policy.json
+
+# 2. Create IAM service account
+eksctl create iamserviceaccount \
+  --cluster=vault-cluster \
+  --namespace=kube-system \
+  --name=aws-load-balancer-controller \
+  --attach-policy-arn=arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/AWSLoadBalancerControllerIAMPolicy \
+  --approve
+
+# 3. Install using Helm
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=vault-cluster \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller
+
+# 4. Verify installation
+kubectl get deployment -n kube-system aws-load-balancer-controller
+
+# Expected output:
+# NAME                           READY   UP-TO-DATE   AVAILABLE   AGE
+# aws-load-balancer-controller   2/2     2            2           30s
+```
+
+#### Step 1.6: Install Metrics Server (for HPA)
+
+```bash
+# Install metrics server
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+# Verify
+kubectl get deployment metrics-server -n kube-system
+
+# Test
+kubectl top nodes
+
+# Expected output:
+# NAME                                       CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%
+# ip-10-0-1-100.us-east-1.compute.internal   150m         7%    800Mi           10%
+# ip-10-0-2-100.us-east-1.compute.internal   140m         7%    750Mi           9%
+# ip-10-0-3-100.us-east-1.compute.internal   145m         7%    780Mi           10%
 ```
 
 ---
 
-## Method 1: Kubernetes Authentication (Recommended)
+## Part 2: Deploy RDS PostgreSQL
 
-### Step 1: Deploy Vault on EKS
+### What We're Doing
 
-#### 1.1 Add HashiCorp Helm Repository
+Creating an Amazon RDS PostgreSQL database for the application.
+
+### Why RDS?
+
+| Feature | Benefit |
+|---------|---------|
+| Managed Database | AWS handles backups, patching |
+| High Availability | Multi-AZ deployment |
+| Encryption | At-rest and in-transit |
+| Automated Backups | Point-in-time recovery |
+
+### Step-by-Step Instructions
+
+#### Step 2.1: Create DB Subnet Group
+
+```bash
+# Get VPC ID
+VPC_ID=$(aws ec2 describe-vpcs \
+  --filters Name=tag:Name,Values="eksctl-vault-cluster-cluster/VPC" \
+  --query "Vpcs[0].VpcId" \
+  --output text)
+
+echo "VPC ID: $VPC_ID"
+
+# Get private subnet IDs
+SUBNET_IDS=$(aws ec2 describe-subnets \
+  --filters \
+    Name=vpc-id,Values=$VPC_ID \
+    Name=tag:Name,Values="eksctl-vault-cluster-cluster/SubnetPrivate*" \
+  --query "Subnets[].SubnetId" \
+  --output text)
+
+echo "Private Subnets: $SUBNET_IDS"
+
+# Create DB subnet group
+aws rds create-db-subnet-group \
+  --db-subnet-group-name vault-db-subnet-group \
+  --db-subnet-group-description "Subnet group for Vault database" \
+  --subnet-ids $SUBNET_IDS
+```
+
+#### Step 2.2: Create Security Group for RDS
+
+```bash
+# Create security group
+SG_ID=$(aws ec2 create-security-group \
+  --group-name vault-db-sg \
+  --description "Security group for Vault RDS" \
+  --vpc-id $VPC_ID \
+  --query "GroupId" \
+  --output text)
+
+echo "Security Group ID: $SG_ID"
+
+# Get EKS node security group
+EKS_SG=$(aws ec2 describe-security-groups \
+  --filters \
+    Name=vpc-id,Values=$VPC_ID \
+    Name=group-name,Values="eksctl-vault-cluster-cluster-sg" \
+  --query "SecurityGroups[0].GroupId" \
+  --output text)
+
+echo "EKS Security Group: $EKS_SG"
+
+# Allow PostgreSQL access from EKS nodes
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID \
+  --protocol tcp \
+  --port 5432 \
+  --source-group $EKS_SG
+
+# Save SG ID for later
+echo "DB_SG_ID=$SG_ID" >> ~/.bashrc
+```
+
+#### Step 2.3: Create RDS PostgreSQL Instance
+
+```bash
+# Create a master password (save this securely!)
+DB_PASSWORD="YourSecurePassword123!@#"
+
+# Create RDS instance
+aws rds create-db-instance \
+  --db-instance-identifier vault-postgres \
+  --db-instance-class db.r5.large \
+  --engine postgres \
+  --engine-version 15.4 \
+  --master-username vault_admin \
+  --master-user-password "$DB_PASSWORD" \
+  --allocated-storage 100 \
+  --storage-encrypted \
+  --db-name app_production \
+  --vpc-security-group-ids $SG_ID \
+  --db-subnet-group-name vault-db-subnet-group \
+  --backup-retention-period 7 \
+  --multi-az \
+  --publicly-accessible \
+  --storage-type gp3 \
+  --deletion-protection
+
+# Wait for database to be available (10-15 minutes)
+aws rds wait db-instance-available \
+  --db-instance-identifier vault-postgres
+
+# Get database endpoint
+DB_ENDPOINT=$(aws rds describe-db-instances \
+  --db-instance-identifier vault-postgres \
+  --query "DBInstances[0].Endpoint.Address" \
+  --output text)
+
+echo "Database Endpoint: $DB_ENDPOINT"
+
+# Save for later
+echo "DB_ENDPOINT=$DB_ENDPOINT" >> ~/.bashrc
+echo "DB_ADMIN_USER=vault_admin" >> ~/.bashrc
+echo "DB_ADMIN_PASSWORD=$DB_PASSWORD" >> ~/.bashrc
+```
+
+#### Step 2.4: Configure Database for Vault
+
+```bash
+# Connect to database
+psql -h $DB_ENDPOINT -U vault_admin -d app_production -W
+
+# Enter password when prompted
+
+# Create schema and grant permissions
+CREATE SCHEMA IF NOT EXISTS vault;
+
+# Create the application tables
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+  username VARCHAR(255) UNIQUE NOT NULL,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id SERIAL PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  description TEXT,
+  status VARCHAR(50) DEFAULT 'pending',
+  priority VARCHAR(50) DEFAULT 'medium',
+  due_date DATE,
+  user_id INTEGER REFERENCES users(id),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+# Grant permissions to vault_admin (for Vault to create dynamic users)
+ALTER USER vault_admin CREATEROLE;
+
+# Exit
+\q
+```
+
+---
+
+## Part 3: Deploy Vault on EKS
+
+### What We're Doing
+
+Deploying HashiCorp Vault on EKS using the official Helm chart.
+
+### Why Use Helm?
+
+| Feature | Benefit |
+|---------|---------|
+| Official Chart | Maintained by HashiCorp |
+| Easy Updates | `helm upgrade` |
+| Configurable | Values file customization |
+| Production Ready | HA, auto-unseal, raft storage |
+
+### Step-by-Step Instructions
+
+#### Step 3.1: Create AWS KMS Key for Auto-Unseal
+
+```bash
+# Create KMS key
+KMS_KEY_ID=$(aws kms create-key \
+  --description "Vault auto-unseal key" \
+  --query "KeyMetadata.KeyId" \
+  --output text)
+
+echo "KMS Key ID: $KMS_KEY_ID"
+
+# Get key ARN
+KMS_KEY_ARN=$(aws kms describe-key \
+  --key-id $KMS_KEY_ID \
+  --query "KeyMetadata.Arn" \
+  --output text)
+
+echo "KMS Key ARN: $KMS_KEY_ARN"
+
+# Create alias for easy reference
+aws kms create-alias \
+  --alias-name alias/vault-auto-unseal \
+  --target-key-id $KMS_KEY_ID
+
+# Save for later
+echo "KMS_KEY_ARN=$KMS_KEY_ARN" >> ~/.bashrc
+```
+
+#### Step 3.2: Create S3 Bucket for Vault Backups
+
+```bash
+# Create S3 bucket (use unique name)
+BUCKET_NAME="vault-backups-$(aws sts get-caller-identity --query Account --output text)-$(date +%Y%m%d)"
+
+aws s3api create-bucket \
+  --bucket $BUCKET_NAME \
+  --region us-east-1
+
+# Enable versioning
+aws s3api put-bucket-versioning \
+  --bucket $BUCKET_NAME \
+  --versioning-configuration Status=Enabled
+
+# Enable encryption
+aws s3api put-bucket-encryption \
+  --bucket $BUCKET_NAME \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+echo "Backup Bucket: $BUCKET_NAME"
+
+# Save for later
+echo "VAULT_BACKUP_BUCKET=$BUCKET_NAME" >> ~/.bashrc
+```
+
+#### Step 3.3: Create IAM Role for Vault
+
+```bash
+# Create trust policy document
+cat > trust-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    },
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):oidc-provider/oidc.eks.us-east-1.amazonaws.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "oidc.eks.us-east-1.amazonaws.com:aud": "sts.amazonaws.com",
+          "oidc.eks.us-east-1.amazonaws.com:sub": "system:serviceaccount:vault:vault"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# Create IAM role
+VAULT_ROLE_ARN=$(aws iam create-role \
+  --role-name vault-kms-role \
+  --assume-role-policy-document file://trust-policy.json \
+  --query "Role.Arn" \
+  --output text)
+
+echo "Vault IAM Role: $VAULT_ROLE_ARN"
+
+# Create KMS policy
+cat > kms-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": "$KMS_KEY_ARN"
+    }
+  ]
+}
+EOF
+
+# Attach KMS policy to role
+aws iam put-role-policy \
+  --role-name vault-kms-role \
+  --policy-name vault-kms-policy \
+  --policy-document file://kms-policy.json
+
+# Create S3 policy for backups
+cat > s3-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::$BUCKET_NAME",
+        "arn:aws:s3:::$BUCKET_NAME/*"
+      ]
+    }
+  ]
+}
+EOF
+
+# Attach S3 policy
+aws iam put-role-policy \
+  --role-name vault-kms-role \
+  --policy-name vault-s3-policy \
+  --policy-document file://s3-policy.json
+
+# Save role ARN
+echo "VAULT_ROLE_ARN=$VAULT_ROLE_ARN" >> ~/.bashrc
+```
+
+#### Step 3.4: Create Vault Namespace
+
+```bash
+# Create namespace
+kubectl create namespace vault
+
+# Verify
+kubectl get namespace vault
+```
+
+#### Step 3.5: Add HashiCorp Helm Repository
 
 ```bash
 # Add Helm repo
@@ -192,57 +1036,144 @@ helm repo add hashicorp https://helm.releases.hashicorp.com
 # Update repo
 helm repo update
 
-# Search for Vault chart
+# Verify
 helm search repo hashicorp/vault
+
+# Expected output:
+# NAME            CHART VERSION   APP VERSION     DESCRIPTION
+# hashicorp/vault 0.25.0          1.15.2          Official HashiCorp Vault Chart
 ```
 
-#### 1.2 Create Vault Namespace
-
-```bash
-kubectl create namespace vault
-```
-
-#### 1.3 Create Custom Values File
+#### Step 3.6: Create Vault Values File
 
 Create `vault-values.yaml`:
 
 ```yaml
 # vault-values.yaml
+# Production configuration for Vault on EKS
 
 global:
   enabled: true
   namespace: vault
+  
+  # Image configuration
+  image: hashicorp/vault:1.15.2
+  imagePullPolicy: IfNotPresent
 
 server:
-  # High availability mode
+  # High Availability mode
   ha:
     enabled: true
     replicas: 3
     
-    # Raft storage
+    # Raft storage (integrated storage)
     raft:
       enabled: true
       setNodeId: true
       
-      # Persistence for Raft
       config: |
         ui = true
+        
         listener "tcp" {
           tls_disable = 1
           address = "[::]:8200"
           cluster_address = "[::]:8201"
         }
+        
         storage "raft" {
           path = "/vault/data"
+          retry_join {
+            leader_api_addr = "http://vault-0.vault-internal:8200"
+          }
+          retry_join {
+            leader_api_addr = "http://vault-1.vault-internal:8200"
+          }
+          retry_join {
+            leader_api_addr = "http://vault-2.vault-internal:8200"
+          }
         }
+        
         disable_mlock = true
         
         # Auto-unseal using AWS KMS
         seal "awskms" {
           region = "us-east-1"
-          kms_key_id = "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012"
+          kms_key_id = "REPLACE_WITH_KMS_KEY_ID"
         }
+        
+        # API address
+        api_addr = "https://vault.example.com"
+        
+        # Cluster address
+        cluster_addr = "https://vault.example.com"
 
+  # Resource limits
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  # Data storage (persistent)
+  dataStorage:
+    enabled: true
+    size: 50Gi
+    storageClass: gp2
+    accessMode: ReadWriteOnce
+
+  # Audit storage
+  auditStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: gp2
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    annotations: {}
+
+  # Ingress configuration (public access)
+  ingress:
+    enabled: true
+    ingressClassName: alb
+    annotations:
+      kubernetes.io/ingress.class: alb
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/certificate-arn: "REPLACE_WITH_ACM_CERT_ARN"
+      alb.ingress.kubernetes.io/healthcheck-path: "/v1/sys/health?standbycode=200&sealedcode=200&uninitcode=200"
+    hosts:
+      - host: vault.example.com
+        paths:
+          - /
+
+  # Service account
+  serviceAccount:
+    create: true
+    name: vault
+    annotations:
+      eks.amazonaws.com/role-arn: "REPLACE_WITH_IAM_ROLE_ARN"
+
+  # Pod disruption budget
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+
+# Vault UI
+ui:
+  enabled: true
+  serviceType: ClusterIP
+
+# Injector (for Vault Agent sidecar)
+injector:
+  enabled: true
+  
+  # Replica count
+  replicas: 2
+  
   # Resource limits
   resources:
     requests:
@@ -252,31 +1183,70 @@ server:
       memory: "512Mi"
       cpu: "500m"
 
-  # Persistence
-  dataStorage:
-    enabled: true
-    size: 10Gi
-    storageClass: "gp2"
-
-  # Service configuration
-  service:
-    type: LoadBalancer
-    annotations: |
-      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-      service.beta.kubernetes.io/aws-load-balancer-internal: "true"
-
-# UI
-ui:
-  enabled: true
-  serviceType: LoadBalancer
-  serviceNodePort: null
-  externalPort: 8200
+# CSI Driver (for Kubernetes secrets)
+csi:
+  enabled: false  # We'll use agent injector instead
 ```
 
-#### 1.4 Install Vault
+Replace the placeholders:
 
 ```bash
-# Install Vault using Helm
+# Replace placeholders in values file
+sed -i "s/REPLACE_WITH_KMS_KEY_ID/$KMS_KEY_ID/g" vault-values.yaml
+sed -i "s/REPLACE_WITH_IAM_ROLE_ARN/$VAULT_ROLE_ARN/g" vault-values.yaml
+
+# For ACM certificate ARN, create one first (see next section)
+```
+
+#### Step 3.7: Request SSL Certificate from AWS ACM
+
+```bash
+# Request SSL certificate
+CERT_ARN=$(aws acm request-certificate \
+  --domain-name vault.example.com \
+  --subject-alternative-names api.example.com app.example.com \
+  --validation-method DNS \
+  --query "CertificateArn" \
+  --output text)
+
+echo "Certificate ARN: $CERT_ARN"
+
+# Get validation records
+aws acm describe-certificate \
+  --certificate-arn $CERT_ARN \
+  --query "Certificate.DomainValidationOptions" \
+  --output json > cert-validation.json
+
+# Add these CNAME records to your DNS provider
+cat cert-validation.json | jq '.'
+
+# Example output:
+# [
+#   {
+#     "DomainName": "vault.example.com",
+#     "ResourceRecord": {
+#       "Name": "_xxxxx.vault.example.com.",
+#       "Type": "CNAME",
+#       "Value": "_yyyyy.acm-validations.aws."
+#     }
+#   }
+# ]
+
+# Wait for validation (after adding DNS records)
+aws acm wait certificate-validated \
+  --certificate-arn $CERT_ARN
+
+# Update values file
+sed -i "s/REPLACE_WITH_ACM_CERT_ARN/$CERT_ARN/g" vault-values.yaml
+
+# Save cert ARN
+echo "ACM_CERT_ARN=$CERT_ARN" >> ~/.bashrc
+```
+
+#### Step 3.8: Install Vault Using Helm
+
+```bash
+# Install Vault
 helm install vault hashicorp/vault \
   --namespace vault \
   --values vault-values.yaml
@@ -289,23 +1259,50 @@ kubectl get pods -n vault
 # vault-0                                 0/1     Running   0          30s
 # vault-1                                 0/1     Running   0          30s
 # vault-2                                 0/1     Running   0          30s
-# vault-agent-injector-5c7b8f9d4c-x9y2z   1/1     Running   0          30s
+# vault-agent-injector-7d8f9c6b4-x9y2z    1/1     Running   0          30s
+
+# Wait for all pods to be ready
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault -n vault --timeout=300s
+
+# Check Vault status
+kubectl exec -n vault vault-0 -- vault status
+
+# Expected output (if auto-unseal works):
+# Key                      Value
+# ---                      -----
+# Seal Type                awskms
+# Initialized              false
+# Sealed                   true
+# ...
 ```
 
-#### 1.5 Initialize Vault (First Time Only)
+#### Step 3.9: Initialize Vault (First Time Only)
 
 ```bash
-# Initialize Vault (only on first install)
+# Initialize Vault (run only once on first install)
 kubectl exec -n vault vault-0 -- vault operator init -format=json > vault-init.json
 
-# Save the unseal keys and root token securely!
+# IMPORTANT: Save this file securely!
+# It contains:
+# - unseal_keys (5 keys)
+# - root_token (admin token)
+
+# View the output
+cat vault-init.json
+
 # Example output:
 # {
-#   "keys": ["key1", "key2", "key3", "key4", "key5"],
-#   "root_token": "s.xxxxxxxx"
+#   "keys": [
+#     "key1...",
+#     "key2...",
+#     "key3...",
+#     "key4...",
+#     "key5..."
+#   ],
+#   "root_token": "hvs.xxxxxxxx"
 # }
 
-# If using AWS KMS auto-unseal, Vault auto-unseals automatically
+# With AWS KMS auto-unseal, Vault should auto-unseal
 # Verify Vault is unsealed
 kubectl exec -n vault vault-0 -- vault status
 
@@ -314,72 +1311,396 @@ kubectl exec -n vault vault-0 -- vault status
 # ---                      -----
 # Seal Type                awskms
 # Initialized              true
-# Sealed                   false
-# Total Shares             5
+# Sealed                   false  <-- Should be false
 # ...
 ```
 
-#### 1.6 Get Vault Service Address
+#### Step 3.10: Verify Vault UI Access
 
 ```bash
-# Get Vault service address
-kubectl get svc -n vault
+# Get ALB address
+ALB_ADDRESS=$(kubectl get ingress -n vault vault -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
-# For internal access from EKS pods:
-VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
+echo "Vault UI: https://$ALB_ADDRESS"
 
-# For external access (if LoadBalancer):
-VAULT_ADDR="http://$(kubectl get svc vault -n vault -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'):8200"
+# Or if using Route 53:
+echo "Vault UI: https://vault.example.com"
 
-echo "Vault Address: $VAULT_ADDR"
+# Open in browser and login with root token
+# Token: hvs.xxxxxxxx (from vault-init.json)
 ```
+
+**What You Should See:**
+
+![Vault UI Login](https://developer.hashicorp.com/vault/docs/getting-started/images/vault-ui-login.png)
 
 ---
 
-### Step 2: Configure Database Secrets Engine
+## Part 4: Configure Vault for Production
 
-#### 2.1 Login to Vault
+### What We're Doing
+
+Configuring Vault with secrets engines, authentication methods, and policies.
+
+### Why This Configuration?
+
+| Component | Purpose |
+|-----------|---------|
+| **Database Secrets Engine** | Auto-generate PostgreSQL credentials |
+| **KV Secrets Engine** | Store API keys, certificates |
+| **Userpass Auth** | Username/password login for developers |
+| **Kubernetes Auth** | Pod authentication for applications |
+| **Policies** | Define who can access what |
+
+### Step-by-Step Instructions
+
+#### Step 4.1: Configure Vault CLI
 
 ```bash
-# Port-forward to Vault (for local access)
-kubectl port-forward -n vault svc/vault 8200:8200 &
+# Set Vault address (use ALB address from previous step)
+export VAULT_ADDR="https://vault.example.com"
 
-# Set Vault address
-export VAULT_ADDR="http://127.0.0.1:8200"
+# Or use ALB directly:
+export VAULT_ADDR="https://$ALB_ADDRESS"
 
 # Login with root token
-export VAULT_TOKEN="s.xxxxxxxx"  # From vault-init.json
+export VAULT_TOKEN="hvs.xxxxxxxx"  # From vault-init.json
 
-# Verify login
+# Verify connection
 vault status
+
+# Expected output:
+# Key                      Value
+# ---                      -----
+# Seal Type                awskms
+# Initialized              true
+# Sealed                   false
+# Total Shares             5
+# Threshold               3
+# Version                 1.15.2
+# ...
 ```
 
-#### 2.2 Enable Database Secrets Engine
+#### Step 4.2: Enable Audit Logging
+
+```bash
+# Enable file audit log (stored in container)
+vault audit enable file file_path=/vault/audit/audit.log
+
+# Verify
+vault audit list
+
+# Expected output:
+# Path     Type
+# ----     ----
+# file/    file
+```
+
+#### Step 4.3: Enable Secrets Engines
 
 ```bash
 # Enable database secrets engine
 vault secrets enable database
 
+# Enable KV secrets engine for API keys
+vault secrets enable -path=secret -version=2 kv
+
+# Verify
+vault secrets list
+
 # Expected output:
-# Success! Enabled the database secrets engine at: database/
+# Path               Type         Description
+# ----               ----         -----------
+# database/          database     n/a
+# secret/            kv           key/value secret storage
+# ...
 ```
 
-#### 2.3 Configure PostgreSQL Connection
+#### Step 4.4: Create Admin Policy
+
+Create `admin-policy.hcl`:
+
+```hcl
+# admin-policy.hcl
+# Full admin access to all paths
+
+# Manage all secrets
+path "*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+```
+
+Apply:
 
 ```bash
-# Configure PostgreSQL connection
+# Create policy
+vault policy write admin admin-policy.hcl
+
+# Verify
+vault policy read admin
+```
+
+#### Step 4.5: Create Security Admin Policy
+
+Create `security-admin-policy.hcl`:
+
+```hcl
+# security-admin-policy.hcl
+# Security team can manage auth, policies, and view all secrets
+
+# Manage authentication methods
+path "auth/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# Manage policies
+path "sys/policies/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# Manage secrets engines
+path "sys/mounts/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# Read all secrets
+path "secret/*" {
+  capabilities = ["read", "list"]
+}
+
+path "database/*" {
+  capabilities = ["read", "list"]
+}
+
+# Manage audit logs
+path "sys/audit/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+```
+
+Apply:
+
+```bash
+vault policy write security-admin security-admin-policy.hcl
+```
+
+---
+
+## Part 5: Create User Authentication
+
+### What We're Doing
+
+Setting up username/password authentication for developers and administrators.
+
+### Why Userpass Auth?
+
+| Feature | Benefit |
+|---------|---------|
+| Simple | Easy for developers to use |
+| Familiar | Username/password pattern |
+| Auditable | Track who accessed what |
+| Fine-grained | Different policies per user |
+
+### Step-by-Step Instructions
+
+#### Step 5.1: Enable Userpass Authentication
+
+```bash
+# Enable userpass auth method
+vault auth enable userpass
+
+# Verify
+vault auth list
+
+# Expected output:
+# Path         Type        Description
+# ----         ----        -----------
+# userpass/    userpass    n/a
+# token/       token       token based credentials
+```
+
+#### Step 5.2: Create Developer Policy
+
+Create `developer-policy.hcl`:
+
+```hcl
+# developer-policy.hcl
+# Developers can read secrets but not modify them
+
+# Read database credentials
+path "database/creds/*" {
+  capabilities = ["read"]
+}
+
+# Read API keys
+path "secret/data/api-keys/*" {
+  capabilities = ["read"]
+}
+
+# Read application secrets
+path "secret/data/apps/*" {
+  capabilities = ["read"]
+}
+
+# List secrets (for UI navigation)
+path "secret/metadata/*" {
+  capabilities = ["list"]
+}
+
+# Cannot:
+# - Write secrets
+# - Delete secrets
+# - Manage auth/policies
+# - Access admin paths
+```
+
+Apply:
+
+```bash
+vault policy write developer developer-policy.hcl
+```
+
+#### Step 5.3: Create Developer Users
+
+```bash
+# Create developer users
+vault write auth/userpass/users/alice@company.com \
+  password="AlicePassword123!" \
+  policies="developer"
+
+vault write auth/userpass/users/bob@company.com \
+  password="BobPassword456!" \
+  policies="developer"
+
+vault write auth/userpass/users/charlie@company.com \
+  password="CharliePassword789!" \
+  policies="developer"
+
+# Verify user
+vault read auth/userpass/users/alice@company.com
+
+# Expected output:
+# Key                        Value
+# ---                        -----
+# password_hmac              xxxx
+# policies                   [developer]
+# token_bound_cidrs          []
+# token_explicit_max_ttl     0s
+# token_max_ttl              0s
+# token_no_default_policy    false
+# token_num_uses             0
+# token_period               0s
+# token_policies             [developer]
+# token_ttl                  0s
+# token_type                 default
+```
+
+#### Step 5.4: Create Admin Users
+
+```bash
+# Create admin users (security team)
+vault write auth/userpass/users/admin@company.com \
+  password="AdminPassword123!" \
+  policies="admin"
+
+vault write auth/userpass/users/security@company.com \
+  password="SecurityPassword456!" \
+  policies="security-admin"
+
+# Verify
+vault list auth/userpass/users
+
+# Expected output:
+# Keys
+# ----
+# alice@company.com
+# bob@company.com
+# charlie@company.com
+# admin@company.com
+# security@company.com
+```
+
+#### Step 5.5: Test User Login
+
+```bash
+# Login as developer
+vault login -method=userpass \
+  username="alice@company.com" \
+  password="AlicePassword123!"
+
+# Expected output:
+# Success! You are now authenticated.
+# token_accessor: xxxxx
+# token_duration: 768h
+# token_policies: [default developer]
+# ...
+
+# Try to read secrets (should work)
+vault read database/creds/app-role
+
+# Try to write secrets (should fail)
+vault write secret/data/test message="hello"
+# Error: permission denied
+```
+
+#### Step 5.6: Configure Token Settings
+
+```bash
+# Set default token TTL
+vault write auth/userpass/config \
+  default_lease_ttl="8h" \
+  max_lease_ttl="24h"
+
+# Verify
+vault read auth/userpass/config
+```
+
+---
+
+## Part 6: Configure Database Secrets Engine
+
+### What We're Doing
+
+Configuring Vault to automatically generate PostgreSQL credentials for applications.
+
+### Why Dynamic Credentials?
+
+| Without Vault | With Vault |
+|---------------|------------|
+| One shared password for all | Unique password per pod |
+| Password never changes | Password rotates every hour |
+| If leaked, all access compromised | If leaked, limited to one pod |
+| Manual rotation required | Automatic rotation |
+| No audit trail | Full audit trail |
+
+### Step-by-Step Instructions
+
+#### Step 6.1: Configure PostgreSQL Connection
+
+```bash
+# Configure database connection
 vault write database/config/postgres \
   plugin_name=postgresql-database-plugin \
   allowed_roles="app-role" \
-  connection_url="postgresql://{{username}}:{{password}}@mydb.xxxx.us-east-1.rds.amazonaws.com:5432/vault_demo?sslmode=require" \
+  connection_url="postgresql://{{username}}:{{password}}@$DB_ENDPOINT:5432/app_production?sslmode=require" \
   username="vault_admin" \
-  password="your-admin-password"
+  password="$DB_ADMIN_PASSWORD"
 
-# Note: vault_admin is a static admin user that Vault uses to create dynamic users
-# This user should have CREATEROLE privilege in PostgreSQL
+# Expected output:
+# Success! Data written to: database/config/postgres
+
+# Verify
+vault read database/config/postgres
+
+# Expected output:
+# Key                                   Value
+# ---                                   -----
+# allowed_roles                         [app-role]
+# connection_details                    map[connection_url:postgresql://...]
+# plugin_name                           postgresql-database-plugin
 ```
 
-#### 2.4 Create Database Role
+#### Step 6.2: Create Database Role
 
 ```bash
 # Create role for application
@@ -389,10 +1710,24 @@ vault write database/roles/app-role \
   default_ttl="1h" \
   max_ttl="24h"
 
-# Verify role
+# Expected output:
+# Success! Data written to: database/roles/app-role
+
+# Verify
 vault read database/roles/app-role
 
-# Test credential generation
+# Expected output:
+# Key                      Value
+# ---                      -----
+# creation_statements      [CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{{name}}";]
+# default_ttl              1h
+# max_ttl                  24h
+```
+
+#### Step 6.3: Test Credential Generation
+
+```bash
+# Generate credentials
 vault read database/creds/app-role
 
 # Expected output:
@@ -402,67 +1737,274 @@ vault read database/creds/app-role
 # lease_duration     1h
 # lease_renewable    true
 # password           xxxx-xxxx-xxxx-xxxx
-# username           v-token-xxxx
+# username           v-token-app-role-xxxx
+
+# Verify in database
+psql -h $DB_ENDPOINT -U vault_admin -d app_production -c "\du"
+
+# Expected output:
+#                                        List of roles
+#            Role name             |                         Attributes                         | Member of
+# ----------------------------------+------------------------------------------------------------+-----------
+# vault_admin                      | Create role, +                                             | {}
+# v-token-app-role-xxxx            | Password valid until 2024-09-25 12:00:00+00               | {}
 ```
 
 ---
 
-### Step 3: Enable Kubernetes Authentication
+## Part 7: Manage API Keys in Vault
 
-#### 3.1 Enable Kubernetes Auth Method
+### What We're Doing
+
+Storing and managing API keys for external services (Stripe, SendGrid, Twilio, etc.).
+
+### Why Store API Keys in Vault?
+
+| Benefit | Description |
+|---------|-------------|
+| Centralized | All API keys in one place |
+| Encrypted | AES-256 encryption at rest |
+| Audited | Know who accessed what key |
+| Rotated | Easy key rotation |
+| Versioned | Keep history of changes |
+
+### Step-by-Step Instructions
+
+#### Step 7.1: Store Stripe API Keys
+
+```bash
+# Store Stripe API key
+vault kv put secret/api-keys/stripe \
+  api_key="sk_live_xxxxxxxxxxxxxxxxxxxx" \
+  publishable_key="pk_live_xxxxxxxxxxxxxxxxxxxx" \
+  webhook_secret="whsec_xxxxxxxxxxxxxxxxxxxx" \
+  environment="production"
+
+# Expected output:
+# ====== Secret Path ======
+# secret/data/api-keys/stripe
+# 
+# ====== Metadata ======
+# Key              Value
+# ---              -----
+# created_time     2024-09-25T10:00:00.000Z
+# custom_metadata  <nil>
+# deletion_time    n/a
+# destroyed        false
+# version          1
+
+# Verify
+vault kv get secret/api-keys/stripe
+
+# Expected output:
+# ====== Secret Path ======
+# secret/data/api-keys/stripe
+# 
+# ====== Metadata ======
+# Key              Value
+# ---              -----
+# created_time     2024-09-25T10:00:00.000Z
+# custom_metadata  <nil>
+# deletion_time    n/a
+# destroyed        false
+# version          1
+# 
+# ====== Data ======
+# Key               Value
+# ---               -----
+# api_key           sk_live_xxxxxxxxxxxxxxxxxxxx
+# publishable_key   pk_live_xxxxxxxxxxxxxxxxxxxx
+# webhook_secret    whsec_xxxxxxxxxxxxxxxxxxxx
+# environment       production
+```
+
+#### Step 7.2: Store SendGrid API Key
+
+```bash
+# Store SendGrid API key
+vault kv put secret/api-keys/sendgrid \
+  api_key="SG.xxxxxxxxxxxxxxxxxxxx" \
+  from_email="noreply@company.com" \
+  from_name="Company Name"
+
+# Verify
+vault kv get secret/api-keys/sendgrid
+```
+
+#### Step 7.3: Store Twilio Credentials
+
+```bash
+# Store Twilio credentials
+vault kv put secret/api-keys/twilio \
+  account_sid="ACxxxxxxxxxxxxxxxxxxx" \
+  auth_token="xxxxxxxxxxxxxxxxxxx" \
+  api_key="SKxxxxxxxxxxxxxxxxxxx" \
+  api_secret="xxxxxxxxxxxxxxxxxxx" \
+  phone_number="+1234567890"
+
+# Verify
+vault kv get secret/api-keys/twilio
+```
+
+#### Step 7.4: Store AWS Credentials (for S3, SES, etc.)
+
+```bash
+# Store AWS credentials
+vault kv put secret/api-keys/aws \
+  access_key_id="AKIAIOSFODNN7EXAMPLE" \
+  secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" \
+  region="us-east-1"
+
+# Verify
+vault kv get secret/api-keys/aws
+```
+
+#### Step 7.5: List All API Keys
+
+```bash
+# List all API keys
+vault kv list secret/api-keys
+
+# Expected output:
+# Keys
+# ----
+# aws
+# sendgrid
+# stripe
+# twilio
+```
+
+#### Step 7.6: Create Policy for API Keys
+
+Create `api-keys-read-policy.hcl`:
+
+```hcl
+# api-keys-read-policy.hcl
+# Read-only access to API keys
+
+# Read API keys
+path "secret/data/api-keys/*" {
+  capabilities = ["read"]
+}
+
+# List API keys
+path "secret/metadata/api-keys/*" {
+  capabilities = ["list"]
+}
+```
+
+Apply:
+
+```bash
+vault policy write api-keys-read api-keys-read-policy.hcl
+```
+
+#### Step 7.7: Rotate API Key
+
+```bash
+# When you need to rotate a key (e.g., Stripe key compromised)
+
+# 1. Generate new key in Stripe dashboard
+
+# 2. Update in Vault
+vault kv put secret/api-keys/stripe \
+  api_key="sk_live_NEWxxxxxxxxxxxxxxxx" \
+  publishable_key="pk_live_xxxxxxxxxxxxxxxxxxxx" \
+  webhook_secret="whsec_xxxxxxxxxxxxxxxxxxxx" \
+  environment="production"
+
+# 3. Version history maintained
+vault kv get -version=1 secret/api-keys/stripe  # Old version
+vault kv get -version=2 secret/api-keys/stripe  # New version
+
+# 4. Check metadata
+vault kv metadata get secret/api-keys/stripe
+
+# Expected output:
+# ====== Metadata Path ======
+# secret/metadata/api-keys/stripe
+# 
+# ====== Metadata ======
+# Key                              Value
+# ---                              -----
+# cas_required                     false
+# created_time                     2024-09-25T10:00:00.000Z
+# current_version                  2
+# delete_version_after             0s
+# max_versions                     0
+# oldest_version                   1
+# updated_time                     2024-09-25T11:00:00.000Z
+```
+
+---
+
+## Part 8: Deploy Backend Application
+
+### What We're Doing
+
+Deploying the Node.js backend application on EKS that uses Vault for database credentials and API keys.
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    Backend Pod                                │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │                 Application Container                   │ │
+│  │                                                        │ │
+│  │  1. Read JWT from /var/run/secrets/.../token          │ │
+│  │  2. Login to Vault (Kubernetes Auth)                   │ │
+│  │  3. Get database credentials from Vault                │ │
+│  │  4. Connect to RDS PostgreSQL                          │ │
+│  │  5. Get API keys from Vault                            │ │
+│  │  6. Serve API requests                                 │ │
+│  │                                                        │ │
+│  │  Environment Variables:                                │ │
+│  │  - VAULT_ADDR=https://vault.example.com               │ │
+│  │  - VAULT_ROLE=backend-role                             │ │
+│  │  - DB_HOST=mydb.xxxx.rds.amazonaws.com                │ │
+│  │  - DB_NAME=app_production                             │ │
+│  │                                                        │ │
+│  └────────────────────────────────────────────────────────┘ │
+│                                                              │
+│  Service Account: backend-sa                                │
+│  └── Authenticates to Vault automatically                  │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Step-by-Step Instructions
+
+#### Step 8.1: Create Namespace
+
+```bash
+# Create namespace
+kubectl create namespace production
+
+# Verify
+kubectl get namespace production
+```
+
+#### Step 8.2: Enable Kubernetes Authentication in Vault
 
 ```bash
 # Enable Kubernetes auth
 vault auth enable kubernetes
 
-# Expected output:
-# Success! Enabled kubernetes auth method at: kubernetes/
-```
+# Get Kubernetes host
+K8S_HOST="https://kubernetes.default.svc:443"
 
-#### 3.2 Configure Kubernetes Auth
-
-```bash
-# Get Kubernetes API server URL
-K8S_API_SERVER="https://kubernetes.default.svc:443"
-
-# Get Kubernetes CA certificate (from inside cluster)
-kubectl exec -n vault vault-0 -- sh -c '
-  kubectl config view --raw --minify --flatten -o jsonpath="{.clusters[].cluster.certificate-authority-data}" | base64 -d > /tmp/k8s-ca.crt
-  cat /tmp/k8s-ca.crt
-'
-
-# Option A: Let Vault auto-discover Kubernetes configuration (easiest)
+# Configure Kubernetes auth
 vault write auth/kubernetes/config \
-  kubernetes_host="https://kubernetes.default.svc:443"
+  kubernetes_host="$K8S_HOST"
 
-# Option B: Manual configuration (more control)
-vault write auth/kubernetes/config \
-  kubernetes_host="https://kubernetes.default.svc:443" \
-  kubernetes_ca_cert=@/tmp/k8s-ca.crt \
-  token_reviewer_jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token
-
-# Expected output:
-# Success! Data written to: auth/kubernetes/config
-```
-
-#### 3.3 Verify Configuration
-
-```bash
-# Read current config
+# Verify
 vault read auth/kubernetes/config
-
-# Expected output:
-# Key                       Value
-# ---                       -----
-# kubernetes_host           https://kubernetes.default.svc:443
-# kubernetes_ca_cert        -----BEGIN CERTIFICATE-----...
 ```
 
----
-
-### Step 4: Create Policy and Role
-
-#### 4.1 Create Policy for Application
+#### Step 8.3: Create Backend Policy
 
 Create `backend-policy.hcl`:
 
@@ -470,8 +2012,13 @@ Create `backend-policy.hcl`:
 # backend-policy.hcl
 # Policy for backend application
 
-# Read database credentials
+# Get database credentials
 path "database/creds/app-role" {
+  capabilities = ["read"]
+}
+
+# Get API keys
+path "secret/data/api-keys/*" {
   capabilities = ["read"]
 }
 
@@ -486,56 +2033,27 @@ path "auth/token/lookup-self" {
 }
 ```
 
-Apply the policy:
+Apply:
 
 ```bash
-# Create policy
-vault policy write backend-policy backend-policy.hcl
-
-# Verify policy
-vault policy read backend-policy
-
-# Expected output:
-# path "database/creds/app-role" {
-#   capabilities = ["read"]
-# }
-# ...
+vault policy write backend backend-policy.hcl
 ```
 
-#### 4.2 Create Kubernetes Auth Role
+#### Step 8.4: Create Kubernetes Auth Role
 
 ```bash
-# Create role that maps Kubernetes Service Account to Vault policy
+# Create role for backend
 vault write auth/kubernetes/role/backend-role \
   bound_service_account_names=backend-sa \
   bound_service_account_namespaces=production \
-  policies=backend-policy \
+  policies=backend \
   ttl=1h
 
-# Verify role
+# Verify
 vault read auth/kubernetes/role/backend-role
-
-# Expected output:
-# Key                                 Value
-# ---                                 -----
-# bound_service_account_names         [backend-sa]
-# bound_service_account_namespaces    [production]
-# policies                            [backend-policy]
-# token_policies                      [backend-policy]
-# ttl                                 1h
 ```
 
----
-
-### Step 5: Deploy Application to EKS
-
-#### 5.1 Create Namespace
-
-```bash
-kubectl create namespace production
-```
-
-#### 5.2 Create Service Account
+#### Step 8.5: Create Service Account
 
 Create `backend-service-account.yaml`:
 
@@ -554,254 +2072,84 @@ Apply:
 kubectl apply -f backend-service-account.yaml
 
 # Verify
-kubectl get serviceaccounts -n production backend-sa
+kubectl get serviceaccount backend-sa -n production
 ```
 
-#### 5.3 Create ConfigMap for Vault Configuration
+#### Step 8.6: Build and Push Docker Image
 
-Create `backend-config.yaml`:
+```bash
+# Create ECR repository
+aws ecr create-repository \
+  --repository-name vault-backend \
+  --image-scanning-configuration scanOnPush=true
+
+# Get ECR login
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com
+
+# Build image
+cd backend
+docker build -t vault-backend:latest .
+
+# Tag for ECR
+docker tag vault-backend:latest $(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/vault-backend:latest
+
+# Push to ECR
+docker push $(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/vault-backend:latest
+
+cd ..
+```
+
+#### Step 8.7: Create ConfigMap
+
+Create `backend-configmap.yaml`:
 
 ```yaml
-# backend-config.yaml
+# backend-configmap.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: backend-config
   namespace: production
 data:
-  VAULT_ADDR: "http://vault.vault.svc.cluster.local:8200"
+  VAULT_ADDR: "https://vault.example.com"
   VAULT_ROLE: "backend-role"
   VAULT_AUTH_METHOD: "kubernetes"
-  DB_HOST: "mydb.xxxx.us-east-1.rds.amazonaws.com"
+  DB_HOST: "mydb.xxxx.rds.amazonaws.com"  # Replace with your RDS endpoint
   DB_PORT: "5432"
-  DB_NAME: "vault_demo"
+  DB_NAME: "app_production"
+  NODE_ENV: "production"
 ```
 
 Apply:
 
 ```bash
-kubectl apply -f backend-config.yaml
+kubectl apply -f backend-configmap.yaml
 ```
 
-#### 5.4 Create Secret for Initial Configuration (Optional)
+#### Step 8.8: Create Secret (Optional)
 
-If you need any static secrets:
+If you have any static secrets:
 
 ```yaml
-# backend-secrets.yaml
+# backend-secret.yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: backend-secrets
+  name: backend-secret
   namespace: production
 type: Opaque
 stringData:
-  # Any static secrets (not database credentials - those come from Vault)
-  API_KEY: "your-api-key"
+  # Any static configuration
+  JWT_SECRET: "your-jwt-secret"
 ```
 
-#### 5.5 Update Application Code
+Apply:
 
-Update `backend/src/vault.js`:
-
-```javascript
-/**
- * Vault Client Module - Kubernetes Authentication
- * For EKS Production Deployment
- */
-
-const axios = require('axios');
-const fs = require('fs');
-
-// Configuration from environment
-const VAULT_ADDR = process.env.VAULT_ADDR || 'http://vault.vault.svc.cluster.local:8200';
-const VAULT_ROLE = process.env.VAULT_ROLE || 'backend-role';
-const VAULT_AUTH_METHOD = process.env.VAULT_AUTH_METHOD || 'kubernetes';
-
-// Kubernetes Service Account JWT path
-const K8S_JWT_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token';
-
-// Token cache
-let token = null;
-let tokenExpiry = null;
-
-/**
- * Login to Vault using Kubernetes authentication
- * @returns {Promise<string>} Vault token
- */
-async function loginWithKubernetes() {
-  try {
-    // Read Kubernetes Service Account JWT
-    if (!fs.existsSync(K8S_JWT_PATH)) {
-      throw new Error(
-        'Kubernetes Service Account JWT not found. ' +
-        'Make sure the pod has a service account configured.'
-      );
-    }
-    
-    const jwt = fs.readFileSync(K8S_JWT_PATH, 'utf8').trim();
-    
-    console.log('🔐 Logging in to Vault with Kubernetes auth...');
-    console.log(`   Vault Address: ${VAULT_ADDR}`);
-    console.log(`   Role: ${VAULT_ROLE}`);
-    
-    // Login to Vault
-    const response = await axios.post(
-      `${VAULT_ADDR}/v1/auth/kubernetes/login`,
-      {
-        role: VAULT_ROLE,
-        jwt: jwt,
-      },
-      {
-        timeout: 10000, // 10 second timeout
-      }
-    );
-    
-    // Extract token and expiry
-    token = response.data.auth.client_token;
-    const leaseDuration = response.data.auth.lease_duration;
-    tokenExpiry = Date.now() + (leaseDuration * 1000);
-    
-    console.log('✅ Successfully authenticated with Vault');
-    console.log(`   Token lease duration: ${leaseDuration}s`);
-    console.log(`   Policies: ${response.data.auth.policies.join(', ')}`);
-    
-    return token;
-    
-  } catch (error) {
-    const message = error.response?.data?.errors?.join(', ') || error.message;
-    throw new Error(`Vault Kubernetes auth failed: ${message}`);
-  }
-}
-
-/**
- * Get a valid Vault token (login if necessary)
- * @returns {Promise<string>} Vault token
- */
-async function getToken() {
-  // Check if we need to login
-  if (!token || !tokenExpiry || Date.now() >= tokenExpiry - 60000) {
-    // Refresh token 1 minute before expiry
-    await loginWithKubernetes();
-  }
-  return token;
-}
-
-/**
- * Read a secret from Vault
- * @param {string} path - Secret path (e.g., 'database/creds/app-role')
- * @returns {Promise<object>} Secret data
- */
-async function read(path) {
-  try {
-    const vaultToken = await getToken();
-    
-    const response = await axios.get(
-      `${VAULT_ADDR}/v1/${path}`,
-      {
-        headers: {
-          'X-Vault-Token': vaultToken,
-        },
-        timeout: 10000,
-      }
-    );
-    
-    return response.data;
-    
-  } catch (error) {
-    // If unauthorized, try to re-authenticate
-    if (error.response?.status === 403 || error.response?.status === 401) {
-      console.log('⚠️ Token invalid, re-authenticating...');
-      token = null;
-      tokenExpiry = null;
-      
-      const vaultToken = await getToken();
-      
-      const response = await axios.get(
-        `${VAULT_ADDR}/v1/${path}`,
-        {
-          headers: {
-            'X-Vault-Token': vaultToken,
-          },
-          timeout: 10000,
-        }
-      );
-      
-      return response.data;
-    }
-    
-    const message = error.response?.data?.errors?.join(', ') || error.message;
-    throw new Error(`Failed to read from Vault (${path}): ${message}`);
-  }
-}
-
-/**
- * Renew Vault token
- * @returns {Promise<void>}
- */
-async function renewToken() {
-  try {
-    const vaultToken = await getToken();
-    
-    const response = await axios.post(
-      `${VAULT_ADDR}/v1/auth/token/renew-self`,
-      {},
-      {
-        headers: {
-          'X-Vault-Token': vaultToken,
-        },
-        timeout: 10000,
-      }
-    );
-    
-    const leaseDuration = response.data.auth.lease_duration;
-    tokenExpiry = Date.now() + (leaseDuration * 1000);
-    
-    console.log(`✅ Token renewed, new expiry in ${leaseDuration}s`);
-    
-  } catch (error) {
-    console.error('❌ Failed to renew token:', error.message);
-    // Force re-login on next request
-    token = null;
-    tokenExpiry = null;
-  }
-}
-
-/**
- * Health check for Vault connection
- * @returns {Promise<{healthy: boolean, message: string}>}
- */
-async function healthCheck() {
-  try {
-    const vaultToken = await getToken();
-    
-    // Test read
-    await read('database/creds/app-role');
-    
-    return {
-      healthy: true,
-      message: 'Vault connection healthy',
-      tokenExpiresIn: tokenExpiry ? Math.round((tokenExpiry - Date.now()) / 1000) : null,
-    };
-    
-  } catch (error) {
-    return {
-      healthy: false,
-      message: error.message,
-    };
-  }
-}
-
-module.exports = {
-  read,
-  getToken,
-  renewToken,
-  healthCheck,
-  loginWithKubernetes,
-};
+```bash
+kubectl apply -f backend-secret.yaml
 ```
 
-#### 5.6 Create Deployment
+#### Step 8.9: Create Deployment
 
 Create `backend-deployment.yaml`:
 
@@ -815,7 +2163,7 @@ metadata:
   labels:
     app: backend
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
       app: backend
@@ -824,23 +2172,16 @@ spec:
       labels:
         app: backend
     spec:
-      # Use the service account we created
       serviceAccountName: backend-sa
       
       containers:
       - name: backend
-        image: your-ecr-repo.amazonaws.com/backend:latest
+        image: $(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/vault-backend:latest
         imagePullPolicy: Always
         
-        # Load environment from ConfigMap
         envFrom:
         - configMapRef:
             name: backend-config
-        
-        # Additional environment variables
-        env:
-        - name: NODE_ENV
-          value: "production"
         
         ports:
         - name: http
@@ -850,7 +2191,7 @@ spec:
         # Health checks
         livenessProbe:
           httpGet:
-            path: /health
+            path: /api/health
             port: http
           initialDelaySeconds: 30
           periodSeconds: 10
@@ -859,7 +2200,7 @@ spec:
         
         readinessProbe:
           httpGet:
-            path: /health
+            path: /api/health
             port: http
           initialDelaySeconds: 10
           periodSeconds: 5
@@ -869,8 +2210,8 @@ spec:
         # Resource limits
         resources:
           requests:
-            memory: "128Mi"
-            cpu: "100m"
+            memory: "256Mi"
+            cpu: "250m"
           limits:
             memory: "512Mi"
             cpu: "500m"
@@ -882,18 +2223,12 @@ spec:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
         
-        # Volume mounts (for logs, temp files)
         volumeMounts:
         - name: tmp
           mountPath: /tmp
-        - name: logs
-          mountPath: /app/logs
       
-      # Volumes
       volumes:
       - name: tmp
-        emptyDir: {}
-      - name: logs
         emptyDir: {}
       
       # Pod security context
@@ -904,25 +2239,46 @@ spec:
 Apply:
 
 ```bash
+# Replace account ID
+sed -i "s/\$(aws sts get-caller-identity --query Account --output text)/$(aws sts get-caller-identity --query Account --output text)/g" backend-deployment.yaml
+
 kubectl apply -f backend-deployment.yaml
 
 # Check deployment
-kubectl get deployments -n production
-
-# Expected output:
-# NAME      READY   UP-TO-DATE   AVAILABLE   AGE
-# backend   2/2     2            2           30s
+kubectl get deployment backend -n production
 
 # Check pods
-kubectl get pods -n production
+kubectl get pods -n production -l app=backend
 
 # Expected output:
-# NAME                      READY   STATUS    RESTARTS   AGE
-# backend-6b8c9d5f4-abc12   1/1     Running   0          30s
-# backend-6b8c9d5f4-xyz34   1/1     Running   0          30s
+# NAME                       READY   STATUS    RESTARTS   AGE
+# backend-7d8f9c6b4-abc12   1/1     Running   0          30s
+# backend-7d8f9c6b4-xyz34   1/1     Running   0          30s
+# backend-7d8f9c6b4-def56   1/1     Running   0          30s
 ```
 
-#### 5.7 Create Service
+#### Step 8.10: Check Logs
+
+```bash
+# Check logs
+kubectl logs -n production -l app=backend --tail=50
+
+# Expected output:
+# 🔌 Connecting to Vault at: https://vault.example.com
+# ✅ Connected to Vault
+# 🔐 Logging in to Vault with Kubernetes auth...
+#    Vault Address: https://vault.example.com
+#    Role: backend-role
+# ✅ Successfully authenticated with Vault
+# ✅ Got credentials from Vault:
+#    Username: v-token-app-role-abc123
+#    Lease Duration: 3600s
+# ✅ Database connection established
+# 🔄 Will refresh credentials in 2520s (at 70% of lease)
+# 🚀 Backend server running on http://localhost:3000
+```
+
+#### Step 8.11: Create Service
 
 Create `backend-service.yaml`:
 
@@ -948,854 +2304,1048 @@ Apply:
 
 ```bash
 kubectl apply -f backend-service.yaml
+
+# Verify
+kubectl get service backend -n production
 ```
 
----
+#### Step 8.12: Create Ingress
 
-### Step 6: Verify Everything Works
+Create `backend-ingress.yaml`:
 
-#### 6.1 Check Application Logs
+```yaml
+# backend-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend
+  namespace: production
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: "$ACM_CERT_ARN"
+spec:
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: backend
+            port:
+              number: 80
+```
+
+Apply:
 
 ```bash
-# Get pod names
-kubectl get pods -n production
+# Replace certificate ARN
+sed -i "s/\$ACM_CERT_ARN/$ACM_CERT_ARN/g" backend-ingress.yaml
 
-# Check logs
-kubectl logs -n production -l app=backend --tail=50
+kubectl apply -f backend-ingress.yaml
+
+# Get ALB address
+kubectl get ingress backend -n production
 
 # Expected output:
-# 🔌 Getting dynamic database credentials from Vault...
-# 🔐 Logging in to Vault with Kubernetes auth...
-#    Vault Address: http://vault.vault.svc.cluster.local:8200
-#    Role: backend-role
-# ✅ Successfully authenticated with Vault
-# ✅ Got credentials from Vault:
-#    Username: v-token-abc123
-#    Lease ID: database/creds/app-role/xxxxx
-#    Lease Duration: 3600s
-#    Expires: 2024-09-23T15:30:00.000Z
-# ✅ Database connection established
-# 🔄 Will refresh credentials in 2520s (at 70% of lease)
+# NAME      CLASS   HOSTS              ADDRESS                                                              PORTS   AGE
+# backend   alb     api.example.com    k8s-production-backend-xxx.us-east-1.elb.amazonaws.com              80      30s
 ```
 
-#### 6.2 Test API Endpoint
+#### Step 8.13: Test Backend API
 
 ```bash
-# Port-forward to backend
-kubectl port-forward -n production svc/backend 3000:80 &
-
 # Test health endpoint
-curl http://localhost:3000/health
+curl https://api.example.com/api/health
 
 # Expected output:
 # {
 #   "status": "healthy",
+#   "timestamp": "2024-09-25T10:00:00.000Z",
+#   "services": {
+#     "api": "running",
+#     "vault": "connected",
+#     "database": "connected"
+#   }
+# }
+
+# Test database connection
+curl https://api.example.com/api/db/test
+
+# Expected output:
+# {
+#   "success": true,
+#   "message": "Database connection successful",
 #   "database": {
-#     "healthy": true,
-#     "message": "Database connection healthy",
+#     "connectedUser": "v-token-app-role-abc123",
 #     "credentials": {
-#       "username": "v-token-abc123",
-#       "secondsUntilExpiry": 3400
+#       "username": "v-token-app-role-abc123",
+#       "expires": "2024-09-25T11:00:00.000Z"
 #     }
 #   }
 # }
 ```
 
-#### 6.3 Test Database Connection
-
-```bash
-# Create a test task
-curl -X POST http://localhost:3000/api/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Test task from EKS", "description": "Testing Vault integration"}'
-
-# Get all tasks
-curl http://localhost:3000/api/tasks
-```
-
 ---
 
-## Method 2: Vault Agent Sidecar
+## Part 9: Deploy Frontend Application
 
-Vault Agent runs as a sidecar container and automatically:
-- Authenticates with Kubernetes auth
-- Retrieves secrets
-- Writes secrets to a shared volume
-- Renews tokens and leases
+### What We're Doing
 
-### Step 1: Install Vault Agent Injector
+Deploying the React frontend application on EKS.
 
-The Vault Helm chart includes the injector by default. If you installed Vault following Method 1, the injector is already running.
+### Step-by-Step Instructions
+
+#### Step 9.1: Build Frontend
 
 ```bash
-# Verify injector is running
-kubectl get pods -n vault -l app.kubernetes.io/name=vault-agent-injector
+# Build production bundle
+cd frontend
+npm install
+npm run build
 
 # Expected output:
-# NAME                                    READY   STATUS    RESTARTS   AGE
-# vault-agent-injector-5c7b8f9d4c-x9y2z   1/1     Running   0          10m
+# dist/
+# ├── index.html
+# ├── assets/
+# │   ├── index-abc123.js
+# │   └── index-xyz789.css
 ```
 
-### Step 2: Create Application Deployment with Annotations
+#### Step 9.2: Create Dockerfile
 
-Create `backend-deployment-sidecar.yaml`:
+Create `frontend/Dockerfile`:
+
+```dockerfile
+# frontend/Dockerfile
+# Stage 1: Build
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+RUN npm run build
+
+# Stage 2: Production
+FROM nginx:alpine
+
+# Copy custom nginx config
+COPY nginx.conf /etc/nginx/nginx.conf
+
+# Copy built files from builder
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Expose port
+EXPOSE 80
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+Create `frontend/nginx.conf`:
+
+```nginx
+# frontend/nginx.conf
+events {
+  worker_connections 1024;
+}
+
+http {
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+  
+  server {
+    listen 80;
+    server_name _;
+    
+    root /usr/share/nginx/html;
+    index index.html;
+    
+    # Handle React Router
+    location / {
+      try_files $uri $uri/ /index.html;
+    }
+    
+    # API proxy
+    location /api {
+      proxy_pass http://backend.production.svc.cluster.local;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+    }
+    
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+  }
+}
+```
+
+#### Step 9.3: Build and Push Docker Image
+
+```bash
+# Create ECR repository
+aws ecr create-repository \
+  --repository-name vault-frontend \
+  --image-scanning-configuration scanOnPush=true
+
+# Build image
+docker build -t vault-frontend:latest .
+
+# Tag for ECR
+docker tag vault-frontend:latest $(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/vault-frontend:latest
+
+# Push to ECR
+docker push $(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/vault-frontend:latest
+
+cd ..
+```
+
+#### Step 9.4: Create Deployment
+
+Create `frontend-deployment.yaml`:
 
 ```yaml
-# backend-deployment-sidecar.yaml
+# frontend-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: backend
+  name: frontend
   namespace: production
   labels:
-    app: backend
+    app: frontend
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: backend
+      app: frontend
   template:
     metadata:
       labels:
-        app: backend
-      annotations:
-        # Enable Vault Agent injection
-        vault.hashicorp.com/agent-inject: "true"
-        
-        # Vault role
-        vault.hashicorp.com/role: "backend-role"
-        
-        # Inject database credentials
-        vault.hashicorp.com/agent-inject-secret-db-creds: "database/creds/app-role"
-        vault.hashicorp.com/agent-inject-template-db-creds: |
-          {{- with secret "database/creds/app-role" -}}
-          {
-            "username": "{{ .Data.username }}",
-            "password": "{{ .Data.password }}",
-            "lease_id": "{{ .LeaseID }}",
-            "lease_duration": {{ .LeaseDuration }}
-          }
-          {{- end }}
-        
-        # Vault address
-        vault.hashicorp.com/secret-volume-path: "/vault/secrets"
-        
-        # Renew credentials before they expire
-        vault.hashicorp.com/agent-revoke-on-shutdown: "true"
-        
+        app: frontend
     spec:
-      serviceAccountName: backend-sa
-      
       containers:
-      - name: backend
-        image: your-ecr-repo.amazonaws.com/backend:latest
+      - name: frontend
+        image: $(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/vault-frontend:latest
         imagePullPolicy: Always
-        
-        env:
-        - name: NODE_ENV
-          value: "production"
-        - name: DB_HOST
-          value: "mydb.xxxx.us-east-1.rds.amazonaws.com"
-        - name: DB_PORT
-          value: "5432"
-        - name: DB_NAME
-          value: "vault_demo"
-        - name: DB_CREDS_PATH
-          value: "/vault/secrets/db-creds"
         
         ports:
         - name: http
-          containerPort: 3000
+          containerPort: 80
           protocol: TCP
         
-        # Mount the shared volume where Vault Agent writes secrets
-        volumeMounts:
-        - name: vault-secrets
-          mountPath: /vault/secrets
-          readOnly: true
-        
+        # Health checks
         livenessProbe:
           httpGet:
-            path: /health
+            path: /
             port: http
-          initialDelaySeconds: 30
+          initialDelaySeconds: 10
           periodSeconds: 10
         
         readinessProbe:
           httpGet:
-            path: /health
+            path: /
             port: http
-          initialDelaySeconds: 10
+          initialDelaySeconds: 5
           periodSeconds: 5
         
+        # Resource limits
         resources:
           requests:
             memory: "128Mi"
             cpu: "100m"
           limits:
-            memory: "512Mi"
-            cpu: "500m"
-      
-      volumes:
-      - name: vault-secrets
-        emptyDir:
-          medium: Memory
+            memory: "256Mi"
+            cpu: "250m"
+        
+        # Security context
+        securityContext:
+          runAsNonRoot: false
+          readOnlyRootFilesystem: true
 ```
 
 Apply:
 
 ```bash
-kubectl apply -f backend-deployment-sidecar.yaml
+sed -i "s/\$(aws sts get-caller-identity --query Account --output text)/$(aws sts get-caller-identity --query Account --output text)/g" frontend-deployment.yaml
+
+kubectl apply -f frontend-deployment.yaml
+
+# Check pods
+kubectl get pods -n production -l app=frontend
 ```
 
-### Step 3: Update Application Code for Sidecar
+#### Step 9.5: Create Service
 
-When using Vault Agent sidecar, your code doesn't need to communicate with Vault at all. The sidecar writes credentials to a file.
-
-Update `backend/src/vault.js`:
-
-```javascript
-/**
- * Vault Client Module - Vault Agent Sidecar Mode
- * Reads credentials from file written by Vault Agent
- */
-
-const fs = require('fs');
-const path = require('path');
-
-// Path to credentials file (set by Vault Agent sidecar)
-const CREDS_PATH = process.env.DB_CREDS_PATH || '/vault/secrets/db-creds';
-
-// Cache for credentials
-let cachedCredentials = null;
-let lastReadTime = 0;
-const CACHE_TTL = 5000; // 5 seconds cache
-
-/**
- * Read credentials from file written by Vault Agent
- * @returns {object} Credentials object
- */
-function readCredentialsFromFile() {
-  try {
-    // Check if file exists
-    if (!fs.existsSync(CREDS_PATH)) {
-      throw new Error(
-        `Credentials file not found at ${CREDS_PATH}. ` +
-        'Ensure Vault Agent sidecar is configured.'
-      );
-    }
-    
-    // Read file
-    const data = fs.readFileSync(CREDS_PATH, 'utf8');
-    const creds = JSON.parse(data);
-    
-    // Update cache
-    cachedCredentials = creds;
-    lastReadTime = Date.now();
-    
-    return creds;
-    
-  } catch (error) {
-    // Return cached credentials if available
-    if (cachedCredentials) {
-      console.warn('⚠️ Failed to read credentials file, using cache:', error.message);
-      return cachedCredentials;
-    }
-    throw error;
-  }
-}
-
-/**
- * Read secret (mock function for compatibility)
- * @param {string} path - Secret path (ignored, reads from file)
- * @returns {Promise<object>} Secret data in Vault API format
- */
-async function read(secretPath) {
-  // Read from file
-  const creds = readCredentialsFromFile();
-  
-  // Return in same format as Vault API for compatibility with db.js
-  return {
-    data: {
-      username: creds.username,
-      password: creds.password,
-    },
-    lease_id: creds.lease_id || 'agent-managed',
-    lease_duration: creds.lease_duration || 3600,
-  };
-}
-
-/**
- * Get current credentials info
- * @returns {object} Credentials info
- */
-function getCredentialsInfo() {
-  const creds = readCredentialsFromFile();
-  return {
-    username: creds.username,
-    leaseId: creds.lease_id,
-    leaseDuration: creds.lease_duration,
-    path: CREDS_PATH,
-    lastRead: new Date(lastReadTime).toISOString(),
-  };
-}
-
-/**
- * Health check
- * @returns {Promise<{healthy: boolean, message: string}>}
- */
-async function healthCheck() {
-  try {
-    const creds = readCredentialsFromFile();
-    
-    if (!creds.username || !creds.password) {
-      return { healthy: false, message: 'Invalid credentials' };
-    }
-    
-    return {
-      healthy: true,
-      message: 'Credentials file available',
-      credentials: getCredentialsInfo(),
-    };
-    
-  } catch (error) {
-    return {
-      healthy: false,
-      message: error.message,
-    };
-  }
-}
-
-module.exports = {
-  read,
-  readCredentialsFromFile,
-  getCredentialsInfo,
-  healthCheck,
-};
-```
-
-### Step 4: Verify Sidecar Injection
-
-```bash
-# Get pod details
-kubectl get pods -n production -l app=backend
-
-# Describe pod to see injected containers
-kubectl describe pod -n production -l app=backend
-
-# You should see TWO containers:
-# - backend (your application)
-# - vault-agent-injector (sidecar)
-
-# Check logs of Vault Agent
-kubectl logs -n production -l app=backend -c vault-agent-init
-
-# Expected output:
-# [INFO]  sink: sink file: token written: path=/home/vault/.vault-token
-# [INFO]  template: receiving template event: source=/vault/secrets/db-creds
-
-# Check application logs
-kubectl logs -n production -l app=backend -c backend
-
-# Check the credentials file inside the pod
-kubectl exec -n production -l app=backend -c backend -- cat /vault/secrets/db-creds
-
-# Expected output:
-# {
-#   "username": "v-token-abc123",
-#   "password": "xxxx-xxxx-xxxx-xxxx",
-#   "lease_id": "database/creds/app-role/xxxxx",
-#   "lease_duration": 3600
-# }
-```
-
----
-
-## Method 3: AppRole Authentication
-
-Use AppRole when Kubernetes auth is not available or when you need machine-to-machine authentication outside of Kubernetes.
-
-### Step 1: Enable AppRole Auth
-
-```bash
-# Enable AppRole auth method
-vault auth enable approle
-
-# Expected output:
-# Success! Enabled the approle auth method at: approle/
-```
-
-### Step 2: Create AppRole
-
-```bash
-# Create AppRole
-vault write auth/approle/role/backend-role \
-  token_policies="backend-policy" \
-  token_ttl=1h \
-  token_max_ttl=4h \
-  secret_id_ttl=0 \
-  secret_id_num_uses=0
-
-# Get Role ID
-vault read auth/approle/role/backend-role/role-id
-
-# Expected output:
-# Key        Value
-# ---        -----
-# role_id    xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-
-# Generate Secret ID
-vault write -f auth/approle/role/backend-role/secret-id
-
-# Expected output:
-# Key                   Value
-# ---                   -----
-# secret_id             xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-# secret_id_accessor    xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
-### Step 3: Store Credentials in Kubernetes Secrets
+Create `frontend-service.yaml`:
 
 ```yaml
-# vault-approle-secret.yaml
+# frontend-service.yaml
 apiVersion: v1
-kind: Secret
+kind: Service
 metadata:
-  name: vault-approle
+  name: frontend
   namespace: production
-type: Opaque
-stringData:
-  role-id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-  secret-id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
 ```
 
 Apply:
 
 ```bash
-kubectl apply -f vault-approle-secret.yaml
+kubectl apply -f frontend-service.yaml
 ```
 
-### Step 4: Update Deployment
+#### Step 9.6: Create Ingress
+
+Create `frontend-ingress.yaml`:
 
 ```yaml
-# backend-deployment-approle.yaml
-apiVersion: apps/v1
-kind: Deployment
+# frontend-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
 metadata:
-  name: backend
+  name: frontend
   namespace: production
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: "$ACM_CERT_ARN"
 spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: backend
-  template:
-    metadata:
-      labels:
-        app: backend
-    spec:
-      serviceAccountName: backend-sa
-      containers:
-      - name: backend
-        image: your-ecr-repo.amazonaws.com/backend:latest
-        env:
-        - name: VAULT_ADDR
-          value: "http://vault.vault.svc.cluster.local:8200"
-        - name: VAULT_AUTH_METHOD
-          value: "approle"
-        - name: DB_HOST
-          value: "mydb.xxxx.us-east-1.rds.amazonaws.com"
-        - name: VAULT_APPROLE_ROLE_ID
-          valueFrom:
-            secretKeyRef:
-              name: vault-approle
-              key: role-id
-        - name: VAULT_APPROLE_SECRET_ID
-          valueFrom:
-            secretKeyRef:
-              name: vault-approle
-              key: secret-id
-        ports:
-        - containerPort: 3000
+  rules:
+  - host: app.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 80
 ```
 
-### Step 5: Update Application Code
+Apply:
 
-Update `backend/src/vault.js`:
+```bash
+sed -i "s/\$ACM_CERT_ARN/$ACM_CERT_ARN/g" frontend-ingress.yaml
 
-```javascript
-/**
- * Vault Client Module - AppRole Authentication
- */
+kubectl apply -f frontend-ingress.yaml
+```
 
-const axios = require('axios');
+#### Step 9.7: Access Frontend
 
-const VAULT_ADDR = process.env.VAULT_ADDR || 'http://vault.vault.svc.cluster.local:8200';
-const ROLE_ID = process.env.VAULT_APPROLE_ROLE_ID;
-const SECRET_ID = process.env.VAULT_APPROLE_SECRET_ID;
+```bash
+# Get ALB address
+kubectl get ingress frontend -n production
 
-let token = null;
-let tokenExpiry = null;
-
-/**
- * Login to Vault using AppRole
- */
-async function loginWithAppRole() {
-  try {
-    console.log('🔐 Logging in to Vault with AppRole...');
-    
-    const response = await axios.post(`${VAULT_ADDR}/v1/auth/approle/login`, {
-      role_id: ROLE_ID,
-      secret_id: SECRET_ID,
-    });
-    
-    token = response.data.auth.client_token;
-    const leaseDuration = response.data.auth.lease_duration;
-    tokenExpiry = Date.now() + (leaseDuration * 1000);
-    
-    console.log('✅ Successfully authenticated with Vault');
-    console.log(`   Token lease duration: ${leaseDuration}s`);
-    
-    return token;
-    
-  } catch (error) {
-    const message = error.response?.data?.errors?.join(', ') || error.message;
-    throw new Error(`AppRole auth failed: ${message}`);
-  }
-}
-
-/**
- * Get valid token
- */
-async function getToken() {
-  if (!token || !tokenExpiry || Date.now() >= tokenExpiry - 60000) {
-    await loginWithAppRole();
-  }
-  return token;
-}
-
-/**
- * Read secret from Vault
- */
-async function read(path) {
-  const vaultToken = await getToken();
-  
-  const response = await axios.get(`${VAULT_ADDR}/v1/${path}`, {
-    headers: { 'X-Vault-Token': vaultToken },
-    timeout: 10000,
-  });
-  
-  return response.data;
-}
-
-module.exports = { read, loginWithAppRole, getToken };
+# Open in browser: https://app.example.com
 ```
 
 ---
 
-## Security Best Practices
+## Part 10: Developer Access Management
 
-### 1. Network Security
+### What We're Doing
 
-```yaml
-# Network Policy - Restrict access to Vault
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: vault-access
-  namespace: production
-spec:
-  podSelector:
-    matchLabels:
-      app: backend
-  policyTypes:
-  - Egress
-  egress:
-  - to:
-    - namespaceSelector:
-        matchLabels:
-          name: vault
-      podSelector:
-        matchLabels:
-          app.kubernetes.io/name: vault
-    ports:
-    - protocol: TCP
-      port: 8200
-  - to:
-    # Allow DNS
-    - namespaceSelector: {}
-      podSelector:
-        matchLabels:
-          k8s-app: kube-dns
-    ports:
-    - protocol: UDP
-      port: 53
-```
+Setting up access control for different developer roles.
 
-### 2. IAM Roles for Service Accounts (IRSA)
+### Access Matrix
 
-If Vault needs AWS permissions (e.g., for KMS auto-unseal):
+| Role | Vault UI Access | Database Creds | API Keys | Manage Users | Admin |
+|------|-----------------|----------------|----------|--------------|-------|
+| **Developer** | ✅ Read-only | ✅ Read | ✅ Read | ❌ | ❌ |
+| **Senior Developer** | ✅ Read-only | ✅ Read | ✅ Read/Write | ❌ | ❌ |
+| **Security Admin** | ✅ Full | ✅ Read | ✅ Read | ✅ | ❌ |
+| **Admin** | ✅ Full | ✅ Full | ✅ Full | ✅ | ✅ |
 
-```yaml
-# Create IAM policy for Vault
-# This is done via AWS CLI or Terraform
+### Step-by-Step Instructions
 
-# IAM Policy Document
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:DescribeKey"
-      ],
-      "Resource": "arn:aws:kms:us-east-1:123456789012:key/xxxxx"
-    }
-  ]
-}
-```
+#### Step 10.1: Create Senior Developer Policy
 
-```bash
-# Create IAM role for service account
-eksctl create iamserviceaccount \
-  --cluster my-eks-cluster \
-  --namespace vault \
-  --name vault-sa \
-  --attach-policy-arn arn:aws:iam::123456789012:policy/VaultKMSAccess \
-  --approve
-```
-
-### 3. Pod Security Standards
-
-```yaml
-# Pod Security Policy (or Pod Security Standards in newer K8s)
-apiVersion: policy/v1beta1
-kind: PodSecurityPolicy
-metadata:
-  name: restricted
-spec:
-  privileged: false
-  runAsUser:
-    rule: MustRunAsNonRoot
-  seLinux:
-    rule: RunAsAny
-  fsGroup:
-    rule: RunAsAny
-  supplementalGroups:
-    rule: RunAsAny
-  volumes:
-  - 'configMap'
-  - 'emptyDir'
-  - 'projected'
-  - 'secret'
-  - 'downwardAPI'
-  - 'persistentVolumeClaim'
-  readOnlyRootFilesystem: true
-```
-
-### 4. Vault Policy Least Privilege
+Create `senior-developer-policy.hcl`:
 
 ```hcl
-# Minimal policy for backend application
+# senior-developer-policy.hcl
+# Senior developers can create/update secrets
+
+# Read database credentials
+path "database/creds/*" {
+  capabilities = ["read"]
+}
+
+# Read and write API keys
+path "secret/data/api-keys/*" {
+  capabilities = ["read", "create", "update"]
+}
+
+# List secrets
+path "secret/metadata/api-keys/*" {
+  capabilities = ["list"]
+}
+
+# Delete old versions
+path "secret/delete/api-keys/*" {
+  capabilities = ["update"]
+}
+```
+
+Apply:
+
+```bash
+vault policy write senior-developer senior-developer-policy.hcl
+```
+
+#### Step 10.2: Create Senior Developer Users
+
+```bash
+# Create senior developer users
+vault write auth/userpass/users/david@company.com \
+  password="DavidPassword123!" \
+  policies="senior-developer"
+
+vault write auth/userpass/users/eve@company.com \
+  password="EvePassword456!" \
+  policies="senior-developer"
+```
+
+#### Step 10.3: Create Team-Based Access
+
+```bash
+# Create team structure
+# Team: payments-team
+# Access: Stripe, PayPal, Twilio
+
+# Create team policy
+cat > payments-team-policy.hcl <<EOF
+# payments-team-policy.hcl
+# Payment team can access payment-related API keys
+
+# Read database credentials
 path "database/creds/app-role" {
   capabilities = ["read"]
 }
 
-# Do NOT grant:
-# - database/config/* (admin access)
-# - database/roles/* (admin access)
-# - sys/* (system admin)
+# Read/write Stripe keys
+path "secret/data/api-keys/stripe" {
+  capabilities = ["read", "create", "update"]
+}
+
+# Read/write PayPal keys
+path "secret/data/api-keys/paypal" {
+  capabilities = ["read", "create", "update"]
+}
+
+# Cannot access: SendGrid, AWS, other teams' secrets
+EOF
+
+vault policy write payments-team payments-team-policy.hcl
+
+# Create payment team users
+vault write auth/userpass/users/frank@company.com \
+  password="FrankPassword123!" \
+  policies="payments-team"
 ```
 
-### 5. Secret Rotation
+#### Step 10.4: Setup Team Groups (Using Identity)
 
 ```bash
-# Set short TTL for database credentials
-vault write database/roles/app-role \
-  db_name=postgres \
-  creation_statements="..." \
-  default_ttl="5m" \     # Short TTL for high-security
-  max_ttl="1h"
+# Create groups using Vault Identity
 
-# Application will auto-renew at 70% of TTL
+# Create group type
+vault write identity/group/name/developers \
+  policies="developer" \
+  member_entity_ids=""
+
+vault write identity/group/name/senior-developers \
+  policies="senior-developer" \
+  member_entity_ids=""
+
+vault write identity/group/name/payments-team \
+  policies="payments-team" \
+  member_entity_ids=""
+
+vault write identity/group/name/security \
+  policies="security-admin" \
+  member_entity_ids=""
+
+vault write identity/group/name/admins \
+  policies="admin" \
+  member_entity_ids=""
+```
+
+#### Step 10.5: Audit and Monitor Access
+
+```bash
+# View audit logs
+kubectl exec -n vault vault-0 -- cat /vault/audit/audit.log | tail -20
+
+# Example audit log:
+# {
+#   "time": "2024-09-25T10:00:00Z",
+#   "type": "request",
+#   "auth": {
+#     "client_token": "hvs.xxxx",
+#     "accessor": "xxxx",
+#     "display_name": "userpass-alice@company.com",
+#     "policies": ["default", "developer"],
+#     "entity_id": "xxxx"
+#   },
+#   "request": {
+#     "operation": "read",
+#     "path": "database/creds/app-role"
+#   }
+# }
+
+# Monitor failed auth attempts
+kubectl exec -n vault vault-0 -- grep "403" /vault/audit/audit.log | tail -10
+```
+
+#### Step 10.6: Create Access Request Workflow (Optional)
+
+For production, implement approval workflow:
+
+1. Developer requests access via ticket (Jira, ServiceNow)
+2. Security team reviews request
+3. Security team creates user with appropriate policy
+4. Credentials sent via secure channel (1Password, Slack secret)
+
+```bash
+# Security team creates user after approval
+vault write auth/userpass/users/newuser@company.com \
+  password="TemporaryPassword123!" \
+  policies="requested-policy"
+
+# User must change password on first login
+# (implement in your application)
 ```
 
 ---
 
-## Troubleshooting
+## Part 11: Monitoring and Maintenance
 
-### Issue 1: "Service Account JWT not found"
+### What We're Doing
+
+Setting up monitoring, alerts, and backup procedures.
+
+### Step-by-Step Instructions
+
+#### Step 11.1: Setup Prometheus Monitoring
+
+```bash
+# Install Prometheus stack
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+helm install prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --create-namespace
+
+# Access Grafana
+kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+
+# Open: http://localhost:3000
+# Default: admin/prom-operator
+```
+
+#### Step 11.2: Configure Vault Metrics
+
+```bash
+# Vault exposes metrics at /v1/sys/metrics
+# Configure Prometheus to scrape
+
+cat > vault-servicemonitor.yaml <<EOF
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vault
+  namespace: vault
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  endpoints:
+  - port: http
+    path: /v1/sys/metrics
+    interval: 30s
+    scheme: http
+    bearerTokenSecret:
+      name: vault-token
+      key: token
+EOF
+
+kubectl apply -f vault-servicemonitor.yaml
+```
+
+#### Step 11.3: Key Metrics to Monitor
+
+| Metric | Description | Alert Threshold |
+|--------|-------------|-----------------|
+| `vault_core_unsealed` | Vault sealed status | < 1 (sealed) |
+| `vault_core_active` | Vault active status | < 1 (standby) |
+| `vault_lease_expiration` | Leases expiring soon | Count > 100 |
+| `vault_token_create_count` | Tokens created | Unusual spike |
+| `vault_route_request_sum` | Request latency | > 100ms avg |
+| `vault_core_request_count` | Total requests | Unusual spike |
+
+#### Step 11.4: Setup Alerts
+
+Create `vault-alerts.yaml`:
+
+```yaml
+# vault-alerts.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vault-alerts
+  namespace: vault
+spec:
+  groups:
+  - name: vault
+    rules:
+    - alert: VaultSealed
+      expr: vault_core_unsealed == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Vault is sealed"
+        description: "Vault instance {{ $labels.instance }} is sealed"
+    
+    - alert: VaultDown
+      expr: up{job="vault"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Vault is down"
+        description: "Vault instance {{ $labels.instance }} is unreachable"
+    
+    - alert: HighRequestLatency
+      expr: histogram_quantile(0.99, rate(vault_route_request_sum[5m])) > 0.1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High request latency"
+        description: "99th percentile latency is {{ $value }}s"
+```
+
+Apply:
+
+```bash
+kubectl apply -f vault-alerts.yaml
+```
+
+#### Step 11.5: Setup Automated Backups
+
+Create `vault-backup-cronjob.yaml`:
+
+```yaml
+# vault-backup-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-backup
+  namespace: vault
+spec:
+  schedule: "0 */6 * * *"  # Every 6 hours
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: vault
+          containers:
+          - name: backup
+            image: hashicorp/vault:1.15.2
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Create snapshot
+              vault operator raft snapshot save /backup/vault-$(date +%Y%m%d-%H%M%S).snap
+              
+              # Upload to S3
+              aws s3 cp /backup/vault-*.snap s3://${BUCKET_NAME}/snapshots/
+              
+              # Clean up old snapshots (keep last 30)
+              aws s3 ls s3://${BUCKET_NAME}/snapshots/ | sort | head -n -30 | awk '{print $4}' | xargs -I {} aws s3 rm s3://${BUCKET_NAME}/snapshots/{}
+            env:
+            - name: VAULT_ADDR
+              value: "http://vault:8200"
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vault-root-token
+                  key: token
+            - name: BUCKET_NAME
+              value: "${VAULT_BACKUP_BUCKET}"
+            volumeMounts:
+            - name: backup
+              mountPath: /backup
+          volumes:
+          - name: backup
+            emptyDir: {}
+          restartPolicy: OnFailure
+```
+
+Apply:
+
+```bash
+sed -i "s/\${VAULT_BACKUP_BUCKET}/$VAULT_BACKUP_BUCKET/g" vault-backup-cronjob.yaml
+
+kubectl apply -f vault-backup-cronjob.yaml
+```
+
+#### Step 11.6: Disaster Recovery Plan
+
+**Scenario: Vault is completely lost**
+
+```bash
+# 1. Restore from S3 snapshot
+aws s3 cp s3://${VAULT_BACKUP_BUCKET}/snapshots/vault-latest.snap ./vault-restore.snap
+
+# 2. Copy to Vault pod
+kubectl cp vault-restore.snap vault/vault-0:/tmp/vault-restore.snap
+
+# 3. Restore snapshot
+kubectl exec -n vault vault-0 -- vault operator raft snapshot restore /tmp/vault-restore.snap
+
+# 4. Verify
+kubectl exec -n vault vault-0 -- vault status
+```
+
+---
+
+## Part 12: Troubleshooting
+
+### Common Issues and Solutions
+
+#### Issue 1: Vault Pods Not Starting
 
 **Symptoms:**
 ```
-Error: Kubernetes Service Account JWT not found
+NAME       READY   STATUS
+vault-0    0/1     CrashLoopBackOff
+```
+
+**Diagnosis:**
+```bash
+# Check logs
+kubectl logs -n vault vault-0
+
+# Check events
+kubectl describe pod -n vault vault-0
+```
+
+**Common causes:**
+- IAM role not properly configured
+- KMS key permissions denied
+- Storage issues
+
+**Solution:**
+```bash
+# Verify IAM role
+kubectl exec -n vault vault-0 -- aws sts get-caller-identity
+
+# Test KMS access
+kubectl exec -n vault vault-0 -- aws kms describe-key --key-id $KMS_KEY_ID
+```
+
+#### Issue 2: Database Connection Failed
+
+**Symptoms:**
+```
+Error: failed to get database credentials: connection refused
+```
+
+**Diagnosis:**
+```bash
+# Test connection from Vault pod
+kubectl exec -n vault vault-0 -- nc -zv $DB_ENDPOINT 5432
+
+# Check security group
+aws ec2 describe-security-groups --group-ids $DB_SG_ID
 ```
 
 **Solution:**
 ```bash
-# Check if service account exists
-kubectl get serviceaccount backend-sa -n production
-
-# Check if pod is using service account
-kubectl get pod -n production -l app=backend -o jsonpath='{.items[0].spec.serviceAccountName}'
-
-# Check if JWT is mounted
-kubectl exec -n production -l app=backend -- ls -la /var/run/secrets/kubernetes.io/serviceaccount/
+# Ensure EKS nodes can access RDS
+aws ec2 authorize-security-group-ingress \
+  --group-id $DB_SG_ID \
+  --protocol tcp \
+  --port 5432 \
+  --source-group $EKS_SG
 ```
 
-### Issue 2: "permission denied"
+#### Issue 3: Kubernetes Auth Failing
 
 **Symptoms:**
 ```
-Error: Vault Kubernetes auth failed: permission denied
+Error: permission denied
 ```
 
-**Solution:**
+**Diagnosis:**
 ```bash
-# Check Vault role configuration
+# Check service account
+kubectl get serviceaccount backend-sa -n production -o yaml
+
+# Check role in Vault
 vault read auth/kubernetes/role/backend-role
-
-# Verify service account name matches
-# bound_service_account_names must match pod's serviceAccountName
-# bound_service_account_namespaces must match pod's namespace
 
 # Check Kubernetes auth config
 vault read auth/kubernetes/config
 ```
 
-### Issue 3: "no handler for route"
+**Solution:**
+```bash
+# Ensure role matches service account name and namespace
+vault write auth/kubernetes/role/backend-role \
+  bound_service_account_names=backend-sa \
+  bound_service_account_namespaces=production \
+  policies=backend \
+  ttl=1h
+```
+
+#### Issue 4: Token Renewal Failing
 
 **Symptoms:**
 ```
-Error: no handler for route "database/creds/app-role"
+Error: token is not renewable
 ```
 
 **Solution:**
 ```bash
-# Check if database secrets engine is enabled
-vault secrets list
-
-# Enable if needed
-vault secrets enable database
-
-# Check if role exists
-vault read database/roles/app-role
-
-# Create if needed
-vault write database/roles/app-role ...
-```
-
-### Issue 4: Vault Agent Not Injecting Secrets
-
-**Symptoms:**
-Pod starts but `/vault/secrets/db-creds` is empty or missing
-
-**Solution:**
-```bash
-# Check injector is running
-kubectl get pods -n vault -l app.kubernetes.io/name=vault-agent-injector
-
-# Check injector logs
-kubectl logs -n vault -l app.kubernetes.io/name=vault-agent-injector
-
-# Verify annotations are correct
-kubectl get pod -n production -l app=backend -o yaml | grep -A 10 annotations
-
-# Check if pod has both containers
-kubectl get pod -n production -l app=backend -o jsonpath='{.spec.containers[*].name}'
-
-# Should show: backend vault-agent
-```
-
-### Issue 5: Token Renewal Failing
-
-**Symptoms:**
-```
-Error: failed to renew token
-```
-
-**Solution:**
-```bash
-# Check token TTL
+# Check token capabilities
 vault token lookup
 
-# Check if token is renewable
-vault token lookup -format=json | jq '.data.renewable'
+# Ensure policy allows renewal
+vault policy read backend
 
-# Manually renew
-vault token renew
-
-# Check policy allows renewal
-vault policy read backend-policy
-
-# Ensure policy has:
+# Should include:
 # path "auth/token/renew-self" {
 #   capabilities = ["update"]
 # }
 ```
 
-### Useful Debugging Commands
+---
 
-```bash
-# Check Vault connectivity from pod
-kubectl exec -n production -l app=backend -- curl -s http://vault.vault.svc.cluster.local:8200/v1/sys/health
+## Summary and Checklist
 
-# Check pod can access Kubernetes API
-kubectl exec -n production -l app=backend -- curl -s --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
-  -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
-  https://kubernetes.default.svc/api/v1/namespaces/production/pods
+### Final Architecture
 
-# View Vault audit logs (if enabled)
-kubectl logs -n vault -l app.kubernetes.io/name=vault | grep audit
-
-# Test database connectivity from pod
-kubectl exec -n production -l app=backend -- nc -zv mydb.xxxx.us-east-1.rds.amazonaws.com 5432
 ```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Production Architecture                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Internet ──────► ALB ──────► Vault UI (vault.example.com)     │
+│                         └──────► Backend API (api.example.com) │
+│                         └──────► Frontend (app.example.com)    │
+│                                                                 │
+│  EKS Cluster:                                                   │
+│  ├── Namespace: vault                                           │
+│  │   ├── vault-0, vault-1, vault-2 (HA)                        │
+│  │   └── vault-agent-injector                                   │
+│  │                                                              │
+│  └── Namespace: production                                      │
+│      ├── backend (3 replicas)                                   │
+│      └── frontend (2 replicas)                                  │
+│                                                                 │
+│  RDS PostgreSQL: mydb.xxxx.rds.amazonaws.com                   │
+│                                                                 │
+│  Vault Configuration:                                           │
+│  ├── Database secrets engine (dynamic credentials)             │
+│  ├── KV secrets engine (API keys)                              │
+│  ├── Userpass auth (developers)                                │
+│  └── Kubernetes auth (applications)                            │
+│                                                                 │
+│  Users:                                                         │
+│  ├── Developers (read-only access)                             │
+│  ├── Senior Developers (read/write secrets)                    │
+│  ├── Security Admin (manage auth & policies)                   │
+│  └── Admin (full access)                                       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Deployment Checklist
+
+#### Pre-Deployment
+- [ ] AWS account ready with admin access
+- [ ] Domain name purchased and hosted zone created
+- [ ] SSL certificate requested and validated
+- [ ] Local tools installed (kubectl, helm, vault, aws-cli)
+
+#### EKS Cluster
+- [ ] EKS cluster created with 3+ nodes
+- [ ] kubectl configured and verified
+- [ ] AWS Load Balancer Controller installed
+- [ ] Metrics server installed
+
+#### RDS Database
+- [ ] RDS PostgreSQL instance created
+- [ ] Security group allows EKS access
+- [ ] Database and tables created
+- [ ] vault_admin user has CREATEROLE privilege
+
+#### Vault Deployment
+- [ ] KMS key created for auto-unseal
+- [ ] S3 bucket created for backups
+- [ ] IAM role created with KMS and S3 permissions
+- [ ] Vault installed via Helm
+- [ ] Vault initialized and unsealed
+- [ ] Root token saved securely
+
+#### Vault Configuration
+- [ ] Audit logging enabled
+- [ ] Database secrets engine configured
+- [ ] KV secrets engine enabled
+- [ ] Userpass auth enabled
+- [ ] Kubernetes auth enabled
+
+#### Users and Policies
+- [ ] Admin policy created
+- [ ] Security admin policy created
+- [ ] Developer policy created
+- [ ] Senior developer policy created
+- [ ] Users created with appropriate policies
+
+#### Application Deployment
+- [ ] Backend policy created in Vault
+- [ ] Kubernetes auth role created
+- [ ] Service account created
+- [ ] Docker images built and pushed to ECR
+- [ ] Backend deployed and working
+- [ ] Frontend deployed and working
+- [ ] Ingress configured with SSL
+
+#### Monitoring
+- [ ] Prometheus installed
+- [ ] Vault metrics being collected
+- [ ] Alerts configured
+- [ ] Backup cronjob configured
+
+#### Testing
+- [ ] Developer can login to Vault UI
+- [ ] Backend can get database credentials
+- [ ] Backend can get API keys
+- [ ] Frontend loads and displays data
+- [ ] Auto-renewal of credentials working
+
+### Security Checklist
+- [ ] Root token stored securely (offline)
+- [ ] Unseal keys stored securely (offline, distributed)
+- [ ] IAM roles follow least privilege
+- [ ] Security groups restrict access
+- [ ] TLS enabled everywhere
+- [ ] Audit logging enabled
+- [ ] Regular backup schedule
+- [ ] Disaster recovery plan documented
+
+### Cost Breakdown
+| Service | Monthly Cost |
+|---------|-------------|
+| EKS Cluster | $73 |
+| EKS Nodes (3x m5.large) | $210 |
+| RDS PostgreSQL (db.r5.large) | $175 |
+| Application Load Balancer (3x) | $60 |
+| NAT Gateway (3x) | $96 |
+| S3 Storage | $5 |
+| KMS | $1 |
+| Data Transfer | ~$20 |
+| **Total** | **~$640/month** |
 
 ---
 
-## Summary
+## Quick Reference Commands
 
-### Method Comparison
+### Vault Commands
 
-| Method | Use Case | Pros | Cons |
-|--------|----------|------|------|
-| **Kubernetes Auth** | EKS native apps | No secrets stored, automatic auth | Requires Vault config |
-| **Vault Agent Sidecar** | Simplest code | Zero Vault code, auto-renewal | Extra container per pod |
-| **AppRole** | Non-K8s apps | Works anywhere | Requires secret management |
+```bash
+# Status
+vault status
 
-### Recommended Setup for Production
+# Login as user
+vault login -method=userpass username="alice@company.com"
 
-1. **Use Kubernetes Authentication** - Most secure for EKS
-2. **Enable auto-unseal with AWS KMS** - Automatic unseal on restart
-3. **Use Raft storage** - Built-in replication
-4. **Set short TTLs** - 5-15 minutes for database credentials
-5. **Enable audit logging** - Track all access
-6. **Use network policies** - Restrict pod-to-pod communication
-7. **Monitor with Prometheus** - Track Vault metrics
+# Get database credentials
+vault read database/creds/app-role
 
-### Files Created
+# Get API key
+vault kv get secret/api-keys/stripe
 
+# List users
+vault list auth/userpass/users
+
+# Create user
+vault write auth/userpass/users/new@company.com \
+  password="Password123!" \
+  policies="developer"
 ```
-vault-lab/
-├── vault-values.yaml              # Helm values for Vault
-├── backend-policy.hcl             # Vault policy
-├── backend-service-account.yaml   # K8s ServiceAccount
-├── backend-config.yaml            # K8s ConfigMap
-├── backend-deployment.yaml        # K8s Deployment
-├── backend-service.yaml           # K8s Service
-├── vault-approle-secret.yaml      # AppRole secrets (if using Method 3)
-└── backend-deployment-sidecar.yaml # Sidecar deployment (if using Method 2)
+
+### kubectl Commands
+
+```bash
+# Get pods
+kubectl get pods -n vault
+kubectl get pods -n production
+
+# Check logs
+kubectl logs -n vault vault-0
+kubectl logs -n production -l app=backend
+
+# Port forward
+kubectl port-forward -n vault svc/vault 8200:8200
+
+# Execute command
+kubectl exec -n vault vault-0 -- vault status
+```
+
+### AWS CLI Commands
+
+```bash
+# Check RDS status
+aws rds describe-db-instances \
+  --db-instance-identifier vault-postgres
+
+# Check EKS cluster
+aws eks describe-cluster --name vault-cluster
+
+# View Vault backups
+aws s3 ls s3://$VAULT_BACKUP_BUCKET/snapshots/
 ```
 
 ---
 
 ## Next Steps
 
-1. **Add Monitoring**: Deploy Prometheus and Grafana to monitor Vault and application
-2. **Add Alerting**: Set up alerts for credential expiry, failed auth attempts
-3. **Implement Backup**: Configure Vault Raft snapshots to S3
-4. **Add TLS**: Enable TLS for Vault traffic in production
-5. **Disaster Recovery**: Document and test Vault recovery procedures
+1. **Implement CI/CD**: Automate deployments with GitHub Actions or Jenkins
+2. **Add more secrets**: Migrate all secrets to Vault
+3. **Setup PagerDuty**: Alert routing for critical issues
+4. **Document processes**: Create runbooks for common operations
+5. **Train team**: Educate developers on using Vault
+6. **Security audit**: Regular security reviews
+7. **Compliance**: Document for SOC2, HIPAA, etc.
+
+---
+
+**End of Guide**
+
+This comprehensive guide covers everything needed to deploy Vault on EKS with full stack integration. Follow each part sequentially for a successful deployment.
