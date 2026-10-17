@@ -99,7 +99,6 @@ start http://localhost:8200/ui
 - Connection pooling with auto-renewal
 
 ---
-
 ## How Vault Integration Works
 
 ### Traditional Approach (INSECURE)
