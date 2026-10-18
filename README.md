@@ -3,7 +3,6 @@
 A complete 3-tier application with enterprise-grade security using HashiCorp Vault for dynamic database credentials.
 
 ---
-
 ## Architecture
 
 ```
