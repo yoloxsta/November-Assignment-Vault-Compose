@@ -45,7 +45,6 @@ docker-compose up -d --build
 # Wait 30 seconds for startup
 Start-Sleep -Seconds 30
 ```
-
 ### 2. Configure Vault Database Engine
 
 ```powershell
