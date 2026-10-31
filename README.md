@@ -119,7 +119,6 @@ const pool = new Pool({
   password: creds.password  // Never in code
 });
 ```
-
 ### Credential Lifecycle
 
 1. App starts → Requests credentials from Vault
