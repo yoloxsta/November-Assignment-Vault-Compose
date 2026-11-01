@@ -260,7 +260,6 @@ docker-compose down --rmi all -v
 - [PostgreSQL Security](https://www.postgresql.org/docs/current/security.html)
 
 ---
-
 You now have a production-ready 3-tier application with enterprise-grade secrets management!
 
 ########
