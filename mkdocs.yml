@@ -1,0 +1,9 @@
+site_name: November-Assignment-Vault-Compose
+docs_dir: .
+nav:
+  - Home: README.md
+  - AppRole Setup: APPROLE-SETUP-GUIDE.md
+  - Real World App: REAL-WORLD-APP.md
+  - Vault UI Auth: vault-ui-auth-guide.md
+  - Burmese: burmese.md
+  - Prod EKS Integration: prod-eks-vault-integration.md
