@@ -2,9 +2,11 @@ apiVersion: backstage.io/v1alpha1
 kind: Component
 metadata:
   name: November-Assignment-Vault-Compose
+  description: Vault Compose assignment project with HashiCorp Vault integration
   annotations:
     github.com/project-slug: yoloxsta/November-Assignment-Vault-Compose
+    backstage.io/techdocs-ref: dir:.
 spec:
-  type: other
-  lifecycle: unknown
+  type: service
+  lifecycle: experimental
   owner: guests
